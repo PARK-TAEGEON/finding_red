@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Build + type check + Lune tests + map checks. Last line is CHECK PASS or CHECK FAIL.
-# Tool binaries: $FR_BIN (default /home/claude/bin) must contain rojo, luau-lsp, lune, globalTypes.d.luau.
+# Tool binaries: $FR_BIN, else .tools/bin (from tools/setup.sh), else /home/claude/bin.
 set -u
 cd "$(dirname "$0")/.."
-BIN="${FR_BIN:-/home/claude/bin}"
+if [ -n "${FR_BIN:-}" ]; then BIN="$FR_BIN"
+elif [ -x .tools/bin/rojo ]; then BIN=".tools/bin"
+elif [ -x /home/claude/bin/rojo ]; then BIN="/home/claude/bin"
+else echo "tools not found: run tools/setup.sh first"; echo "CHECK FAIL"; exit 1; fi
 mkdir -p build
 fail=0
 
