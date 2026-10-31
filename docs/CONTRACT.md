@@ -1,4 +1,4 @@
-# 파인딩 레드 (FINDING RED) — 개발 계약서 v0.4
+# 파인딩 레드 (FINDING RED) — 개발 계약서 v0.5
 
 > 이 문서가 프로젝트의 단일 기준이다. 모든 에이전트는 작업 전에 전부 읽고, 여기 적힌 이름·형식·수치를 그대로 쓴다.
 > 계약을 바꿔야 할 것 같으면 **고치지 말고** 보고서의 "계약 변경 제안"에 적는다. 계약 변경은 오케스트레이터만 한다.
@@ -22,7 +22,7 @@
 | # | 항목 | 결정 |
 |---|---|---|
 | D1 | 이름 | 파인딩 레드 (FINDING RED) |
-| D2 | 레드의 행동 | 자기 구역 안에서 배회. 사람을 발견하면 "!" 후 구역 안에서 도망. 공격 안 함 |
+| D2 | 레드의 행동 | **v0.5 변경**: 원작처럼 구역 배회 → 발견하면 "!" → 다가와서 공격. 도망 행동은 나중 변종용으로 남김 |
 | D3 | 도장 조건 | 위 3가지, 조건별 독립, 누적 수집 |
 | D4 | 시간 제한 | 기준 시간의 3배 지나면 실패 |
 | D5 | 스테이지 해금 | 파티에 해금한 사람이 한 명이라도 있으면 선택 가능. 클리어하면 참가자 전원 다음 스테이지 해금 |
@@ -97,7 +97,7 @@
 
 | Kind | 단계 | HP | 행동 | 공격 | Penalty |
 |---|---|---|---|---|---|
-| `Red` | 슬라이스 | 30 | 구역 배회(8). 시야 40에서 발견 → "!" → 구역 안에서 반대쪽으로 도주(13) 4초 → 지쳐서 2초 느림(6) → 반복 | 없음 | false (목표) |
+| `Red` | 슬라이스 | 30 | 구역 배회(8). 시야 35에서 발견 → "!" 0.5초 → 추격(14), `Leash` 40 넘으면 귀환 (v0.5) | 근접 8 / 1.2초, 사거리 4 | false (목표) |
 | `White` | 슬라이스 | 60 | 구역 배회(8). 25 안에 오거나 맞으면 "!" → 추격(18), `Leash` 50 넘으면 포기하고 귀환 | 근접 10 / 1초, 사거리 4 | true |
 | `Bomb` | MVP | 10 | 20 안에 오면 다가옴(14). 5 안에서 1.2초 뒤 폭발 | 반경 12, 플레이어 40 / 몬스터 100 | false |
 | `Raptor` | MVP | 120 | 빠른 추격(22), 레드를 태울 수 있음 (`Rider`) | 근접 20 / 1초 | true |
@@ -133,6 +133,24 @@
 - 오케스트레이터가 기본 효과음을 합성해 주고, 검수자가 Roblox에 업로드해 ID를 채운다.
 
 ---
+
+### 1.12 v0.5 원작 체감 개선 (플레이 피드백 반영)
+
+원작 영상을 다시 확인해서 바꾼 것. 담당: [A] 무기, [B] 몬스터, [C] 흐름·UI, [D] 맵.
+
+1. **레드도 공격한다** [B]: 위 §1.8 표대로. 레드와 화이트의 차이는 "잡아야 하나, 잡으면 벌점인가"뿐이다. 레드 추격 속도(14)는 플레이어 걷기(16)보다 느려서 뒤로 빠지며 쏠 수 있다. 기존 도주 로직은 `Behavior = "Flee"` 설정으로 남겨 두되 슬라이스에서는 쓰지 않는다.
+2. **제자리에서 무너지는 죽음** [B]: 날려 보내지 않는다. 맞은 방향으로 1~3스터드만 밀리며 무릎이 꺾이고 앞이나 뒤로 힘없이 쓰러져(관절이 풀린 래그돌) **바닥에 누운 채로 남는다**. 시체는 판이 끝날 때까지 유지(최대 12구, 넘으면 오래된 것부터 서서히 사라짐), 플레이어와 충돌하지 않고, 총알도 통과한다(`State="Dead"`). 처치 순간 `RedDeath`/`PenaltyKill` 소리.
+3. **시작 방 + 문** [C][D]: 원작처럼 판은 **작은 시작 방**(통로)에서 시작한다. 방 안에 칠판(미션·힌트)과 그 판에서 주울 수 있는 무기가 바닥에 놓여 있고, 경기장으로 통하는 **흰 문**이 닫혀 있다.
+   - `Countdown` 페이즈 = 시작 방 단계. 파티는 시작 방의 `PlayerSpawn`에 선다. 몬스터는 이미 경기장에 있지만 `IsPlaying()`이 false라 반응하지 않는다.
+   - 파티원 누구든 문 앞 5스터드 안에서 상호작용(E / 화면의 **손 버튼**)하면 문이 열리고 `Playing` 시작 (타이머도 이때부터). 아무도 안 열면 `StartRoomSeconds`(20초) 뒤 자동으로 열린다. `EndsAt` = 자동 열림 시각.
+   - 문은 옆으로 미끄러지거나 경첩으로 열리는 연출(0.6초) 후 통과 가능. 판 끝까지 열린 상태.
+   - 리모트: `Interact {R, Kind = "OpenDoor"}` (Target 없음). 서버(StageFlow)가 거리·페이즈·라운드를 검사하고 `Stage:OpenStartDoor()` 호출.
+4. **로딩 화면** [C]: 스테이지 전환(투표 끝 → 시작 방 배치) 동안 1~2초 전체 화면 "Loading..." + 진행 막대 + 우리 캐릭터 그림(코드로 그린 단순한 실루엣) + 팁 한 줄. 플레이어가 맵이 지어지는 모습이나 떨어지는 모습을 보지 않게 한다.
+5. **레벨 선택 화면** [C]: 로비 투표 UI를 원작 문법의 격자로: "LEVEL 1" 제목 아래 스테이지 칸(1, 2, 3 …)마다 도장 칸 3개(획득한 것만 채움), 잠긴 칸은 회색 + 자물쇠. 다른 파티원의 표는 칸 위 작은 점으로. 결과 화면 버튼 문구는 `다시하기` / `다음` (+ `로비로`).
+6. **체력·탄약 픽업** [A][D]: 슬라이스에 포함. `HealthPickup`(빨간 십자 상자) → `Flow:HealPlayer(p, 40)`, `AmmoPickup`(초록 탄약 상자) → 들고 있는 무기 예비탄 +50%. 걸어가면 자동 획득, **플레이어마다 각자 1회** (무기 픽업과 같은 방식). 시작 방의 무기는 기존 `WeaponPickup` 마커.
+7. **피격 연출** [C]: 원작처럼 맞으면 화면 전체가 0.3초 빨갛게 (가장자리만이 아니라 전체, 반투명).
+
+캐릭터 디자인은 우리 고유 디자인을 유지한다 (원작 캐릭터를 색만 바꿔 쓰지 않는다).
 
 ## 2. 기술 구조
 
@@ -304,7 +322,7 @@ export type Profile = {
 | `Reload` | C→S | `weaponId: string` |
 | `Throw` | C→S | `{ R: number, W: string, O: Vector3, D: Vector3, Power: number }` |
 | `Equip` | C→S | `weaponId: string` |
-| `Interact` | C→S | `{ R: number, Kind: "ReviveStart" \| "ReviveStop", Target: number }` |
+| `Interact` | C→S | `{ R: number, Kind: "ReviveStart" \| "ReviveStop" \| "OpenDoor", Target: number? }` |
 | `Setting` | C→S | `key: string, value: any` (`"Sensitivity"`, 0.2~3) |
 | `Effect` | S→C 전체 | `kind: string, data: { [string]: any }` |
 | `Feedback` | S→C 개인 | `{ Kind: string, Text: string?, [string]: any }` |
@@ -369,6 +387,8 @@ export type StageService = {
     LobbySpawn: (self: StageService, index: number) -> CFrame,
     SetBoard: (self: StageService, lines: { string }) -> (),   -- 칠판: {"LEVEL 1-1", "레드 1마리 잡기", "힌트: ..."}
     SetLobbyBoard: (self: StageService, text: string) -> (),
+    OpenStartDoor: (self: StageService) -> (),                 -- v0.5: 시작 방 문 열기 (멱등)
+    StartDoorPosition: (self: StageService) -> Vector3?,       -- v0.5: 문 위치 (거리 검사용)
     GeometryParams: (self: StageService) -> RaycastParams,     -- 맵 지오메트리만
 }
 
@@ -408,12 +428,12 @@ export type Context = { Services: Services, Remotes: Folder }
 **호출 방향** (이 외의 호출은 금지):
 
 ```
-StageFlow ──→ Stage:Load/Unload/Current/LobbySpawn/SetBoard/SetLobbyBoard,
+StageFlow ──→ Stage:Load/Unload/Current/LobbySpawn/SetBoard/SetLobbyBoard/OpenStartDoor/StartDoorPosition,
               Enemy:SpawnStage/ClearAll, Weapon:PrepareStage/ClearStage/GiveLoadout/StripLoadout, Data:*
 EnemyService ──→ Flow:ReportKill/DamagePlayer/GetParty/GetLife/IsPlaying/GiveTeamKey, Stage:GeometryParams,
                  Weapon:Explode (Bomb)
 WeaponService ──→ Enemy:Damage/Knockback/PositionAt/GetRadius/GetKind/IsAlive/QueryRadius,
-                  Flow:RoundId/GetLife/GetParty/DamagePlayer/IsPlaying, Stage:GeometryParams/Current, Data:Get
+                  Flow:RoundId/GetLife/GetParty/DamagePlayer/HealPlayer/IsPlaying, Stage:GeometryParams/Current, Data:Get
 ```
 
 ### 3.9 v0.4 보완 (1차 웨이브 통합에서 확정)
@@ -562,7 +582,9 @@ end
 | `EnemySpawn` | `Kind`, `Count`(Red 제외), `Zone`(구역 반지름), `HasKey?`, `KeyColor?` | Red 마커는 `Count` 대신 `Weight` |
 | `Board` | — | 칠판 1개 (시작 지점에서 보이게) |
 | `WeaponPickup` | `Weapon` | 마커 `Id` 필수 (플레이어별 획득 기록용) |
-| `AmmoPickup` / `HealthPickup` | — | MVP |
+| `AmmoPickup` / `HealthPickup` | `Id` 필수 | v0.5부터 슬라이스 |
+| `StartDoor` | — | 스테이지마다 1개 (v0.5). 문 파트 중심. 시작 방과 경기장 사이 |
+| `StartRoom` | `Size`(문자열 "x,y,z") | 스테이지마다 1개 (v0.5). 시작 방 영역 중심. 몬스터 구역은 이 안에 겹치면 안 됨 |
 | `KeyPickup` / `KeyDoor` | `Color` | MVP |
 | `VehicleSpawn` | `Kind` | 확장 |
 
@@ -621,6 +643,7 @@ Assets.get(key: string): Instance?      -- ReplicatedStorage.Assets 안의 경�
 
 ## 6. 변경 이력
 
+- **v0.5 (2026-10-31)** 플레이 피드백 반영 (§1.12): 레드 추격·공격, 제자리 쓰러짐·시체 유지, 시작 방 + 문, 로딩 화면, 레벨 선택 격자, 체력·탄약 픽업, 전체 화면 피격 연출. `StageService:OpenStartDoor/StartDoorPosition`, `Interact OpenDoor`, `StartRoomSeconds`.
 - **v0.4 (2026-10-31)** 1차 웨이브 통합 결과 반영 (§3.9): Damage 반환값, 넉백 속도, 몬스터·플레이어 속성, 피드백 필드, 사격 시각 보정, IsPlaying 사격 차단, 마커 높이, 스트리밍 끔.
 - **v0.3 (2026-10-31)** 원작 영상 분석 반영: 짧은 판 템포, 슬라이스를 1-1~1-3으로, 목표 수 1부터 + 협동 곱셈 보정, 무기 픽업(플레이어별), 저격총 슬라이스 포함, R6 몬스터 + 구역 행동 + "!" + 체력바, 레이더·피격 화면·조작 버튼 구성, 결과 후 바로 다음 판 투표, 칠판 힌트, 맵 키트 + 순수 데이터 + 미리보기 렌더러 + 맵 검사, 기믹 스키마, 차량 처치 인정(화이트는 벌점), 에셋 레지스트리, 순수 모듈 규칙, 클라이언트 컨트롤러 타입.
 - v0.2 (2026-10-31) 이름 파인딩 레드, 원작 방식 유지 + 협동, 외부 리뷰 반영.

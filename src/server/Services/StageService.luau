@@ -182,6 +182,12 @@ function StageService.SetBoard(self: Types.StageService, lines: { string })
 	end
 end
 
+-- v0.5 stubs added by the orchestrator; Agent D replaces them.
+function StageService.OpenStartDoor(self: Types.StageService) end
+function StageService.StartDoorPosition(self: Types.StageService): Vector3?
+	return nil
+end
+
 function StageService.SetLobbyBoard(self: Types.StageService, text: string)
 	if lobbyBoard and lobbyBoard.Parent then
 		MapBuilder.setBoardLines(lobbyBoard, splitLines(text))

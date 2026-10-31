@@ -4,7 +4,10 @@ return {
 	MaxPlayers = 4,
 	ReadyTimeoutSeconds = 20,
 	VoteSeconds = 10,
-	CountdownSeconds = 5,
+	CountdownSeconds = 5, -- unused since v0.5 (start room replaces countdown)
+	StartRoomSeconds = 20, -- v0.5: door auto-opens after this
+	DoorInteractRange = 5,
+	LoadingSeconds = 1.5,
 	ResultSeconds = 8,
 	TimeLimitMultiplier = 3,
 	CoopScale = 0.5,

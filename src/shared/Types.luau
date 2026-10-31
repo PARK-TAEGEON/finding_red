@@ -128,6 +128,8 @@ export type StageService = {
 	LobbySpawn: (self: StageService, index: number) -> CFrame,
 	SetBoard: (self: StageService, lines: { string }) -> (),
 	SetLobbyBoard: (self: StageService, text: string) -> (),
+	OpenStartDoor: (self: StageService) -> (), -- v0.5, idempotent
+	StartDoorPosition: (self: StageService) -> Vector3?, -- v0.5
 	GeometryParams: (self: StageService) -> RaycastParams,
 }
 
