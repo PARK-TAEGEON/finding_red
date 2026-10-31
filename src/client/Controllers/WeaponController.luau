@@ -49,6 +49,16 @@ local SLOT_KEYS: { [Enum.KeyCode]: number } = {
 	[Enum.KeyCode.Four] = 4,
 }
 
+-- Server time at which the player saw the world they shot at: now minus replication delay and
+-- interpolation (review fix #4). The server clamps T to [now-0.4, now+0.1].
+local function seenTime(): number
+	local ping = 0
+	pcall(function()
+		ping = game:GetService("Players").LocalPlayer:GetNetworkPing()
+	end)
+	return workspace:GetServerTimeNow() - math.clamp(ping, 0, 0.25) - 0.1
+end
+
 local function specOf(id: string?): Spec?
 	if id == nil or id == "Order" or id == "Default" then
 		return nil
@@ -252,7 +262,7 @@ local function fire(fresh: boolean)
 			W = id,
 			O = origin,
 			D = dir,
-			T = workspace:GetServerTimeNow(),
+			T = seenTime(),
 		})
 		return
 	end
@@ -281,7 +291,7 @@ local function fire(fresh: boolean)
 		W = id,
 		O = origin,
 		D = dir,
-		T = workspace:GetServerTimeNow(),
+		T = seenTime(),
 		Id = enemyId,
 		P = hitPos,
 	})

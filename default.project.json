@@ -6,6 +6,11 @@
       "Shared": { "$path": "src/shared" },
       "Assets": { "$path": "assets" }
     },
+    "Workspace": {
+      "$properties": {
+        "StreamingEnabled": false
+      }
+    },
     "ServerScriptService": {
       "Server": { "$path": "src/server" }
     },

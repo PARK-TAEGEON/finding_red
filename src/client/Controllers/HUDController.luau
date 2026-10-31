@@ -792,6 +792,8 @@ function HUDController.Start(self: Types.HUDController)
 			hurt(if type(data.Amount) == "number" then data.Amount else 10)
 		elseif data.Kind == "Message" and type(data.Text) == "string" then
 			toast(data.Text)
+		elseif data.Kind == "PickedUp" and type(data.Text) == "string" then
+			toast(data.Text .. " (3번 키)") -- review fix #3
 		end
 	end)
 

@@ -53,7 +53,7 @@ local lastReload: { [Player]: number } = {}
 local VOID_Y = -100
 local VOTE_MIN_SECONDS = 2
 local RESULT_MIN_SECONDS = 4
-local LOBBY_BOARD = "준비 버튼을 누르면 출발!"
+local LOBBY_BOARD = "파인딩 레드\n준비 버튼을 누르면 출발!\n레드만 잡으세요!" -- 3 board lines (review fix #5)
 
 -- Helpers -------------------------------------------------------------------------
 local function now(): number
@@ -197,7 +197,7 @@ local function lobbyCFrame(index: number): CFrame
 		return ctx.Services.Stage:LobbySpawn(index)
 	end)
 	if ok and typeof(cf) == "CFrame" then
-		return cf + Vector3.new(0, 3, 0)
+		return cf -- LobbySpawn is already at root height (review fix #2)
 	end
 	return CFrame.new(index * 4, 8, 0)
 end
@@ -206,7 +206,7 @@ local function stageCFrame(index: number): CFrame
 	local slot = FlowLogic.spawnSlot(index, #spawnList)
 	local marker = spawnList[slot]
 	if marker and marker.Parent then
-		local pos = marker.Position + Vector3.new(0, 3, 0)
+		local pos = marker.Position -- spawn markers already sit at root height (Kit.SpawnLift, review fix #2)
 		local look = marker.CFrame.LookVector
 		local flat = Vector3.new(look.X, 0, look.Z)
 		if flat.Magnitude > 0.01 then
@@ -803,7 +803,8 @@ local function onInteract(player: Player, payload: any)
 	if not Net.isNumber(payload.R) or payload.R ~= state.RoundId or state.Phase ~= "Playing" then
 		return
 	end
-	if not Net.isNumber(payload.Target, 1, 2 ^ 53) then
+	-- Studio local-server test players have negative UserIds (-1, -2): allow them. (review fix #1)
+	if not Net.isNumber(payload.Target, -2 ^ 53, 2 ^ 53) or payload.Target ~= math.floor(payload.Target) then
 		return
 	end
 	local target = Players:GetPlayerByUserId(payload.Target)

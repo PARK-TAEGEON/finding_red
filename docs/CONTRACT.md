@@ -1,4 +1,4 @@
-# 파인딩 레드 (FINDING RED) — 개발 계약서 v0.3
+# 파인딩 레드 (FINDING RED) — 개발 계약서 v0.4
 
 > 이 문서가 프로젝트의 단일 기준이다. 모든 에이전트는 작업 전에 전부 읽고, 여기 적힌 이름·형식·수치를 그대로 쓴다.
 > 계약을 바꿔야 할 것 같으면 **고치지 말고** 보고서의 "계약 변경 제안"에 적는다. 계약 변경은 오케스트레이터만 한다.
@@ -410,11 +410,27 @@ export type Context = { Services: Services, Remotes: Folder }
 ```
 StageFlow ──→ Stage:Load/Unload/Current/LobbySpawn/SetBoard/SetLobbyBoard,
               Enemy:SpawnStage/ClearAll, Weapon:PrepareStage/ClearStage/GiveLoadout/StripLoadout, Data:*
-EnemyService ──→ Flow:ReportKill/DamagePlayer/GetParty/GetLife/IsPlaying, Stage:GeometryParams,
+EnemyService ──→ Flow:ReportKill/DamagePlayer/GetParty/GetLife/IsPlaying/GiveTeamKey, Stage:GeometryParams,
                  Weapon:Explode (Bomb)
 WeaponService ──→ Enemy:Damage/Knockback/PositionAt/GetRadius/GetKind/IsAlive/QueryRadius,
-                  Flow:RoundId/GetLife/GetParty/DamagePlayer, Stage:GeometryParams/Current, Data:Get
+                  Flow:RoundId/GetLife/GetParty/DamagePlayer/IsPlaying, Stage:GeometryParams/Current, Data:Get
 ```
+
+### 3.9 v0.4 보완 (1차 웨이브 통합에서 확정)
+
+- `EnemyService:Damage` 반환값 = **이번 피해로 죽었으면 true** (정확히 한 번). 죽은 몬스터에는 항상 false.
+- `EnemyService:Knockback(id, dir, stun)`: `dir`의 길이 ≤ 1.5면 기본 속도 45, 그보다 길면 그 길이를 밀어내는 속도로 쓴다 (최대 120).
+- 몬스터 모델 속성 추가: `HP`, `MaxHP`, `Attack`(화이트가 때릴 때마다 +1), `KeyColor`. 죽은 몬스터는 `State="Dead"`로 최대 2.5초 남는다 — 클라이언트 레이캐스트·레이더는 건너뛴다.
+- 플레이어 속성 추가: `BleedOutAt`(쓰러짐 만료 서버 시각), `SaveStatus`.
+- `Feedback`: `Hurt`에 `Source?`, `PickedUp`에 `Text?`, `Hit`에 `Knockback?`. `Fire`의 `P`는 `Id` 없이 올 수 있다 (빗나간 탄 착탄점, 피해 없음).
+- `Fire.T` = 클라이언트가 **목표를 본 시각** 추정 (`GetServerTimeNow() − ping − 0.1`). 서버는 [now−0.4, now+0.1]로 자른다.
+- 서버는 `Flow:IsPlaying()`이 false면 사격·픽업을 받지 않는다 (카운트다운 중 공짜 처치 방지).
+- 마커 높이: `PlayerSpawn`과 로비 스폰은 **HumanoidRootPart 높이**(바닥 + 3), `WeaponPickup`은 바닥 + 2. 이동 코드는 추가로 띄우지 않는다.
+- `Stage:GeometryParams()`는 호출할 때마다 새 객체를 돌려준다. 맵이 바뀌면 다시 불러야 한다.
+- 맵 파트 이름이 `Light`면 PointLight가 붙는다 (임시 규칙, 2차에서 필드로 정식화).
+- 판 종료 순서: 결과 시작 시 `Enemy:ClearAll → Weapon:ClearStage → StripLoadout`, 결과 투표 후 **로비로 이동 → `Stage:Unload`** (`Unload`는 여러 번 불러도 안전).
+- 프로젝트 설정: `StarterPlayer.EnableMouseLockOption = false`, `Workspace.StreamingEnabled = false` (x=2000 스테이지가 늦게 스트리밍돼 추락하는 것 방지).
+- 2차로 미룸: `EnemyDeath`에 `Kind`, 열쇠 드롭(`Flow:GiveTeamKey`), 3인칭 무기 표시, 모바일 터치 감도, 모바일 점프 버튼 중복.
 
 ### 3.5 클라이언트 API
 
@@ -605,6 +621,7 @@ Assets.get(key: string): Instance?      -- ReplicatedStorage.Assets 안의 경�
 
 ## 6. 변경 이력
 
+- **v0.4 (2026-10-31)** 1차 웨이브 통합 결과 반영 (§3.9): Damage 반환값, 넉백 속도, 몬스터·플레이어 속성, 피드백 필드, 사격 시각 보정, IsPlaying 사격 차단, 마커 높이, 스트리밍 끔.
 - **v0.3 (2026-10-31)** 원작 영상 분석 반영: 짧은 판 템포, 슬라이스를 1-1~1-3으로, 목표 수 1부터 + 협동 곱셈 보정, 무기 픽업(플레이어별), 저격총 슬라이스 포함, R6 몬스터 + 구역 행동 + "!" + 체력바, 레이더·피격 화면·조작 버튼 구성, 결과 후 바로 다음 판 투표, 칠판 힌트, 맵 키트 + 순수 데이터 + 미리보기 렌더러 + 맵 검사, 기믹 스키마, 차량 처치 인정(화이트는 벌점), 에셋 레지스트리, 순수 모듈 규칙, 클라이언트 컨트롤러 타입.
 - v0.2 (2026-10-31) 이름 파인딩 레드, 원작 방식 유지 + 협동, 외부 리뷰 반영.
 - v0.1 (2026-10-31) 초안.
