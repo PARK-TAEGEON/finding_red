@@ -330,8 +330,8 @@ local function onFire(player: Player, payload: any)
 		return
 	end
 	local origin, dir = o :: Vector3, d :: Vector3
-	if Flow:GetLife(player) ~= "Alive" then
-		return
+	if not Flow:IsPlaying() or Flow:GetLife(player) ~= "Alive" then
+		return -- no shooting during Countdown/Result (orchestrator, contract v0.4)
 	end
 	local head = characterPart(player, "Head")
 	if not head then
