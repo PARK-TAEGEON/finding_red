@@ -302,9 +302,8 @@ end
 
 -- Stage lifecycle -----------------------------------------------------------------
 local function cleanupStage()
-	safe("Enemy:ClearAll", function()
-		ctx.Services.Enemy:ClearAll()
-	end)
+	-- Enemies (and their bodies) stay visible on the result screen like the original;
+	-- leaveStage() clears them right before unloading. (orchestrator)
 	safe("Weapon:ClearStage", function()
 		ctx.Services.Weapon:ClearStage()
 	end)
@@ -337,6 +336,9 @@ local function leaveStage()
 			moveTo(p, lobbyCFrame(i))
 		end
 	end
+	safe("Enemy:ClearAll", function()
+		ctx.Services.Enemy:ClearAll()
+	end)
 	safe("Stage:Unload", function()
 		ctx.Services.Stage:Unload()
 	end)

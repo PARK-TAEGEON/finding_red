@@ -471,8 +471,16 @@ handlers.Chase = function(brain, cfg, sense, action)
 			brain.NextAttack = sense.Now + melee.Interval
 		end
 	end
+	-- Target off our level (perched Red vs player on the ground, or the reverse): hold the
+	-- zone edge nearest them on our own floor instead of jumping down. (review v0.5 #1)
+	local goal = copy(t.Pos)
+	if math.abs(t.Pos[2] - brain.Home[2]) > 6 then
+		goal = EnemyLogic.clampToZone(goal, brain.Home, brain.Zone)
+		goal[2] = brain.Home[2]
+		action.Face = copy(t.Pos)
+	end
 	if d > range * 0.6 then
-		action.Goal = copy(t.Pos)
+		action.Goal = goal
 	else
 		action.Face = copy(t.Pos)
 	end

@@ -875,7 +875,7 @@ function HUDController.Start(self: Types.HUDController)
 		elseif data.Kind == "Message" and type(data.Text) == "string" then
 			toast(data.Text)
 		elseif data.Kind == "PickedUp" and type(data.Text) == "string" then
-			toast(data.Text .. " (3번 키)") -- review fix #3
+			toast(if data.Item == "Weapon" or data.Item == nil and data.Weapon ~= nil then data.Text .. " (3번 키)" else data.Text) -- review v0.5 #3
 		end
 	end)
 

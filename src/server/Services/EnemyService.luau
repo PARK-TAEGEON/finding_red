@@ -607,6 +607,10 @@ local function melee(e: Enemy, userId: number)
 	if (t.Root.Position - rootPos).Magnitude > m.Range + 1.5 then
 		return
 	end
+	local from = rootPos + Vector3.new(0, 1.5, 0)
+	if workspace:Raycast(from, t.Root.Position - from, geoParams()) then
+		return -- no hits through walls (review v0.5 #2)
+	end
 	e.Attacks += 1
 	e.Model:SetAttribute("Attack", e.Attacks)
 	local ok, err = pcall(function()
