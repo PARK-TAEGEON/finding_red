@@ -3,6 +3,9 @@
 -- Speeds are Humanoid WalkSpeed (studs/s), distances in studs, times in seconds, colors "#RRGGBB".
 -- Wave 1 behaviour exists for Red and White. Bomb/Raptor/Missile are data only (MVP); EnemyService
 -- skips spawning kinds it has no behaviour for.
+-- v0.5: `Behavior` picks the brain ("Chase" = notice -> "!" -> chase + melee -> leash/return,
+-- "Flee" = notice -> "!" -> run away -> tire). Red chases by default (CONTRACT §1.12.1); its old flee
+-- tuning stays in `Flee` so a future variant can set Behavior = "Flee".
 
 export type FleeConfig = { Run: number, Rest: number, RestSpeed: number }
 export type MeleeConfig = { Damage: number, Interval: number, Range: number }
@@ -12,8 +15,9 @@ export type EnemyConfig = {
 	Name: string,
 	HP: number,
 	Radius: number, -- hit radius used by weapon validation (GetRadius)
+	Behavior: string?, -- "Chase" | "Flee"; nil = inferred (Flee table -> Flee, Melee + Leash -> Chase)
 	Speed: number, -- wander / return speed
-	RunSpeed: number, -- flee (Red) or chase (White) speed
+	RunSpeed: number, -- chase (or flee) speed
 	Sight: number, -- detection distance (needs line of sight)
 	Leash: number?, -- chasers give up beyond this distance from home
 	Penalty: boolean, -- killing it by a player costs the team ★3
@@ -27,18 +31,22 @@ export type EnemyConfig = {
 local Enemies: { [string]: EnemyConfig } = {
 	Red = {
 		Name = "레드",
+		Behavior = "Chase",
 		HP = 30,
 		Radius = 2,
 		Speed = 8,
-		RunSpeed = 13,
-		Sight = 40,
+		RunSpeed = 14, -- slower than player walk (16): you can back-pedal and shoot
+		Sight = 35,
+		Leash = 40,
 		Penalty = false,
-		Flee = { Run = 4, Rest = 2, RestSpeed = 6 },
+		Melee = { Damage = 8, Interval = 1.2, Range = 4 },
+		Flee = { Run = 4, Rest = 2, RestSpeed = 6 }, -- only used when Behavior = "Flee"
 		Body = "#D92B22",
 		Accent = "#FFD21F", -- eyes
 	},
 	White = {
 		Name = "화이트",
+		Behavior = "Chase",
 		HP = 60,
 		Radius = 2,
 		Speed = 8,

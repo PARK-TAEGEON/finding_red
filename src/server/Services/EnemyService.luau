@@ -2,7 +2,9 @@
 -- Server enemy system (CONTRACT §1.4, §1.8, §2.6, §3.4). Owner: B.
 -- Spawns R6 enemies from EnemySpawn markers, runs their brains (pure EnemyLogic) at 10 Hz,
 -- executes the decisions with Humanoid:MoveTo (Pathfinding only when blocked), owns enemy HP,
--- kill reporting, knockback/stun, death fling and the position history used for lag compensation.
+-- kill reporting, knockback/stun and the position history used for lag compensation.
+-- v0.5: Reds chase and hit like Whites (Config Behavior = "Chase"); deaths collapse in place into a
+-- limp ragdoll that stays on the floor until ClearAll (Enemy/Corpse.luau).
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local PathfindingService = game:GetService("PathfindingService")
@@ -15,6 +17,7 @@ local Rules = require(Shared.Rules)
 local EnemyLogic = require(Shared.EnemyLogic)
 local EnemiesConfig = require(Shared.Config.Enemies)
 local EnemyModels = require(Shared.Models.EnemyModels)
+local Corpse = require(script.Parent.Enemy.Corpse)
 
 type Vec3 = EnemyLogic.Vec3
 type EnemyConfig = EnemiesConfig.EnemyConfig
@@ -29,10 +32,8 @@ local PATH_LIFETIME = 5
 local STUCK_WINDOW = 0.8 -- seconds between progress checks
 local STUCK_MOVE = 0.8 -- studs of progress expected per window
 local FALL_DEPTH = 80 -- below home ground = fell out of the world
-local CORPSE_SECONDS = 2.5 -- removal delay after death (<= 3 s contract)
 local ROOT_HEIGHT = 3 -- R6 root centre above the feet
 local DEFAULT_ZONE = 12
-local DEATH_FLING = { Speed = 60, Lift = 38, Spin = 16 }
 local KNOCKBACK = { Speed = 45, Lift = 20, MaxAir = 1.2 }
 local SUPPORTED: { [string]: boolean } = { Red = true, White = true }
 
@@ -472,19 +473,24 @@ local function showAlert(e: Enemy)
 end
 
 -- Death / removal ---------------------------------------------------------------------------------------
-local function remove(e: Enemy)
-	if e.Removed then
-		return
-	end
+-- Live bookkeeping ends at death; the model is handed to Corpse (or destroyed when quiet).
+local function detach(e: Enemy)
 	e.Removed = true
 	for _, c in ipairs(e.Conns) do
 		c:Disconnect()
 	end
 	table.clear(e.Conns)
-	e.Model:Destroy()
 	if enemies[e.Id] == e then
 		enemies[e.Id] = nil
 	end
+end
+
+local function remove(e: Enemy)
+	if e.Removed then
+		return
+	end
+	detach(e)
+	e.Model:Destroy()
 end
 
 local function randomFlatDir(): Vector3
@@ -492,29 +498,7 @@ local function randomFlatDir(): Vector3
 	return Vector3.new(math.cos(a), 0, math.sin(a))
 end
 
-local function fling(e: Enemy, from: Vector3?)
-	local root = e.Root
-	local dir = randomFlatDir()
-	if from then
-		local d = root.Position - from
-		local f = Vector3.new(d.X, 0, d.Z)
-		if f.Magnitude > 0.05 then
-			dir = f.Unit
-		end
-	end
-	e.Hum.PlatformStand = true
-	pcall(function()
-		root:SetNetworkOwner(nil)
-	end)
-	root.AssemblyLinearVelocity = dir * DEATH_FLING.Speed + Vector3.new(0, DEATH_FLING.Lift, 0)
-	local axis = Vector3.new(math.random() - 0.5, math.random() - 0.5, math.random() - 0.5)
-	if axis.Magnitude < 0.1 then
-		axis = Vector3.xAxis
-	end
-	root.AssemblyAngularVelocity = axis.Unit * DEATH_FLING.Spin * 0.5 + dir:Cross(Vector3.yAxis) * DEATH_FLING.Spin
-end
-
--- quiet = fell out of the world / vanished: no fling, no effect, removed at once.
+-- quiet = fell out of the world / vanished: no collapse, no effect, removed at once.
 local function die(e: Enemy, byPlayer: Player?, cause: Types.KillCause, from: Vector3?, quiet: boolean)
 	if e.Dead then
 		return
@@ -537,12 +521,17 @@ local function die(e: Enemy, byPlayer: Player?, cause: Types.KillCause, from: Ve
 			alert.Enabled = false
 		end
 	end
-	if not quiet and e.Root.Parent then
-		fling(e, from)
-		fireEffect("EnemyDeath", { Id = e.Id, Pos = pos, From = from })
-		task.delay(CORPSE_SECONDS, function()
-			remove(e)
+	if not quiet and e.Root.Parent and e.Model.Parent then
+		detach(e)
+		local model = e.Model
+		local ok, err = pcall(function()
+			Corpse.collapse(model, from)
 		end)
+		if not ok then
+			warn("[EnemyService] collapse failed: " .. tostring(err))
+			e.Model:Destroy()
+		end
+		fireEffect("EnemyDeath", { Id = e.Id, Pos = pos, From = from, Kind = e.Kind })
 	else
 		remove(e)
 	end
@@ -744,6 +733,7 @@ local function spawnEnemy(marker: BasePart, kind: string): Enemy?
 	model:SetAttribute("MaxHP", cfg.HP)
 	model:SetAttribute("Attack", 0)
 	model.Name = ("%s_%d"):format(kind, id)
+	Corpse.tagEnemy(model) -- live enemies pass through corpses
 	model:PivotTo(CFrame.new(spawnPos + Vector3.new(0, ROOT_HEIGHT, 0)) * CFrame.Angles(0, math.random() * 2 * math.pi, 0))
 	model.Parent = folder
 	pcall(function()
@@ -862,6 +852,7 @@ local function clearAll()
 	end
 	enemies = {}
 	kindById = {}
+	Corpse.clear()
 	if folder then
 		folder:ClearAllChildren()
 	end
@@ -871,6 +862,7 @@ end
 -- Contract API --------------------------------------------------------------------------------------------
 function EnemyService.Init(self: Types.EnemyService, c: Types.Context)
 	ctx = c
+	Corpse.setup()
 	local existing = workspace:FindFirstChild("Enemies")
 	if existing and existing:IsA("Folder") then
 		folder = existing

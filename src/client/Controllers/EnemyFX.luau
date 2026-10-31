@@ -2,8 +2,11 @@
 -- Client-side enemy effects (CONTRACT §1.8, §1.11). Owner: B. Purely cosmetic, never authoritative.
 -- Watches workspace.Enemies models:
 --   State -> "Alert": "!" pop + Alert sound      State -> "Stunned": spinning stars
---   HP drops: brief white flash                    Attack counter: WhiteAttack sound + arm swing
--- Effect "EnemyDeath": RedDeath sound + corpse fade-out before the server removes it.
+--   HP drops: brief white flash                    Attack counter (Red and White): WhiteAttack sound + arm swing
+-- Effect "EnemyDeath" {Id, Pos, From, Kind}: RedDeath sound for Reds only (a non-target kill's
+--   PenaltyKill sound belongs to the killer's hit marker, WeaponController). The body itself
+--   collapses on the server and stays (v0.5).
+-- Attribute "Fade" (server corpse cap): the oldest body fades out locally before it is removed.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
@@ -99,7 +102,7 @@ end
 local function swing(w: Watch)
 	local torso = w.Model:FindFirstChild("Torso")
 	local shoulder = torso and torso:FindFirstChild("Right Shoulder")
-	if not shoulder or not shoulder:IsA("Motor6D") then
+	if not shoulder or not shoulder:IsA("Motor6D") or not shoulder.Enabled then
 		return
 	end
 	local base = w.SwingC0 or shoulder.C0
@@ -207,12 +210,26 @@ local function watch(inst: Instance)
 	table.insert(
 		w.Conns,
 		model:GetAttributeChangedSignal("Attack"):Connect(function()
+			if model:GetAttribute("State") == "Dead" then
+				return
+			end
 			ctx.PlaySound("WhiteAttack", posOf(model))
 			swing(w)
 		end)
 	)
+	table.insert(
+		w.Conns,
+		model:GetAttributeChangedSignal("Fade"):Connect(function()
+			if model:GetAttribute("Fade") == true then
+				fadeOut(model, 0, 0.9)
+			end
+		end)
+	)
 	if model:GetAttribute("State") == "Stunned" then
 		setStunned(w, true)
+	end
+	if model:GetAttribute("Fade") == true then
+		fadeOut(model, 0, 0.9)
 	end
 end
 
@@ -221,16 +238,21 @@ local function onEffect(kind: any, data: any)
 		return
 	end
 	if kind == "EnemyDeath" then
-		local pos = data.Pos
-		ctx.PlaySound("RedDeath", if typeof(pos) == "Vector3" then pos else nil)
 		local id = data.Id
 		local model = if type(id) == "number" then byId[id] else nil
+		local enemyKind = data.Kind
+		if type(enemyKind) ~= "string" and model then
+			enemyKind = model:GetAttribute("Kind")
+		end
+		if enemyKind == "Red" then
+			local pos = data.Pos
+			ctx.PlaySound("RedDeath", if typeof(pos) == "Vector3" then pos else nil)
+		end
 		if model then
 			local w = watched[model]
 			if w then
 				setStunned(w, false)
 			end
-			fadeOut(model, 1.6, 0.8)
 		end
 	end
 end
