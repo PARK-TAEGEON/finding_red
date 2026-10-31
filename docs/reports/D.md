@@ -138,3 +138,128 @@ top: 꼭대기 높이 색(viridis) + 파트색 섞음, 테두리, 걸어서 못 
 4. **MapPart에 조명 필드**: 지금은 `Name = "Light"`인 파트에 PointLight를 붙이는 관례를 쓴다. 이후 레벨을 위해 `MapPart.Light: { Range, Brightness, Color }?` 같은 필드를 제안한다.
 5. **키트·문법 추가 (MVP 레벨용)**: 기믹 조각 `keyDoor`(색 문 + `KeyDoor` 마커), `switchTarget`(`ShootSwitch`), `pressurePlate`, `crusher`(천장 가시 + 경로), `missileLane`(경로 점 목록), 회복·탄약 상자 마커 헬퍼, 미로형 벽돌 통로 생성기(`maze(seed, cells)`), 경사로(Wedge) `ramp`, 벽 위를 걷는 통로(두꺼운 Mid 벽 + 계단). 이 기믹의 `MapGimmick.Attr` 스키마(연결 대상 Id, 경로 점 등)를 §3.7에 정해 주면 바로 키트에 넣겠다. 경로 점은 Attr가 스칼라만 받으므로 `"x,y,z;x,y,z"` 문자열 같은 형식이 필요하다.
 6. **`Stages`에 `Sky` 외 조명 프리셋 이름**(예: `"Dusk"`)을 허용하면 StageService에 프리셋만 추가하면 된다.
+
+---
+
+## v0.5 변경 (개선 웨이브 1.5: 시작 방 + 문 + 체력·탄약 픽업)
+
+### 1. 바뀐 파일
+
+| 파일 | 변경 |
+|---|---|
+| `src/server/Maps/Kit.luau` | `Kit.startRoom(parts, markers, center, opts)` + `Kit.startRoomSouth(parts, markers, d, x?, opts?)`, `Kit.health(markers, surface, id)`, `Kit.ammo(markers, surface, id, weapon?)`, `Kit.board`에 `legs = false`(벽걸이), 색 `Door/DoorFrame/DoorHandle/RoomWall/RoomBand/RoomFloor`, 상수 `Kit.Room`, 파트 이름 `Kit.Names` |
+| `src/server/Maps/S1_1~3.luau` | 남쪽 가운데 스폰 패드·칠판을 시작 방으로 교체, 체력·탄약 픽업 추가 |
+| `src/server/Maps/Validate.luau` | 시작 방 규칙, 체력·탄약 픽업 규칙, 지붕 아래 높이 보정, 문 열림/닫힘 두 격자 |
+| `src/server/Services/StageService.luau` | 스텁을 `OpenStartDoor` / `StartDoorPosition` 실제 구현으로 교체. `Load`가 문을 닫힌 상태로 찾아 둔다 |
+| `tests/maps.spec.luau` | 267 → **447개** 검사 |
+| `tools/dump_maps.luau` | 요약 줄에 시작 방 크기·누수 칸·픽업 수 |
+| `tools/map_preview.py` | 문(흰 막대 + 검은 테두리 + 열린 위치 점선·화살표), 시작 방 점선 상자 + 안에 있는 물건 목록, 체력(빨간 십자)·탄약(초록 상자) 아이콘. top 뷰는 방 지붕을 숨기고, iso 뷰는 지붕과 카메라 쪽 벽을 반투명하게 그린다 |
+
+MapBuilder는 바꾸지 않았다 (문은 일반 Geometry 파트, 새 마커는 기존 태그·속성 규칙 그대로).
+
+### 2. 시작 방 키트 (`Kit.startRoom`)
+
+- 안쪽 14(문 벽 방향) × 10(깊이), 벽 높이 12, 두께 1, 지붕(0.8) → **완전히 막힌 방**. 바닥은 나무판(0.2) — 스폰 마커는 그 위 +3.
+- `opts.facing` = 방에서 경기장 쪽 방향(`-z` 기본, `+z` `-x` `+x`), `opts.board = "right" | "left"`(좌우 반전), `opts.door = { at = 2, width = 6, height = 8 }`, `opts.length/depth/height`.
+- **흰 문** 6×8×0.6 (`Name = "StartDoor"`, 충돌 있음) + 양면 손잡이 2개(`StartDoor`, 충돌 없음) + 남색 문틀(`DoorFrame` 기둥, 윗막대는 `DoorLintel`). 문 위 벽은 `DoorLintel`. 문은 **벽 두께 속으로 미끄러져 들어가는 포켓 도어**: 옆 벽 구간(길이 7)이 문 폭(6)보다 길어서 열리면 문이 벽 속에 완전히 숨는다(테스트로 확인).
+- 칠판: 방 오른쪽 끝 벽에 벽걸이(8×5, 다리 없음), 스폰 4개(`Spawn1~4`)는 반대쪽 끝에 한 줄로 서서 칠판을 본다(약 10.5스터드). 문은 스폰에서 보면 왼쪽 앞.
+- 조명: 천장 Neon 판 + 문 위 바깥쪽 등(둘 다 `Light`, 충돌 없음).
+- 마커:
+  - `StartDoor` — 문 중심(바닥 + 4). `Rot`은 경기장 쪽을 본다(LookVector = 나가는 방향). 속성 `Slide = "x,y,z"`(열린 위치까지의 이동량, 맵 좌표 = 월드 좌표), `Width`, `Height`.
+  - `StartRoom` — 방 안쪽 중심(바닥 + 6). 속성 `Size = "14,12,10"`(월드 축 기준 안쪽 크기).
+- 반환값 `{ spots, door, outside, floor, min, max }`: `spots` = 바닥 위 픽업 자리 3곳(스폰 줄에서 5.5 이상 떨어져서 스폰하자마자 자동으로 줍지는 않고, 문까지 걸어가는 길에 줍게 됨).
+- `Kit.startRoomSouth(parts, markers, D, x)` = 남쪽 외벽에 붙여 문이 북쪽을 향하게. 방 뒷벽이 따로 있어서 외벽 유리 너머가 보이지 않는다.
+- 파트 수: 방 하나 18개.
+
+### 3. 스테이지별 시작 방
+
+세 스테이지 모두 방은 남쪽 외벽 가운데(안쪽 x −7~7), 문은 북쪽 벽의 x −1~5, 맵 좌표 문 중심 = `(2, 4, D/2 − 11.5)`.
+
+| 스테이지 | 방 안 | 경기장 픽업 | 메모 |
+|---|---|---|---|
+| 1-1 (90) | 없음 | `S1_1_Health` (13, 0, −4): 가운데 낮은 벽 사각형 동쪽 | 문 양옆 바깥에 가로등 (±11, 30). 문 밖에서 보이는 레드 마커 4개 중 1개 |
+| 1-2 (110) | `S1_2_Sniper`(바닥, 스폰 앞) | `S1_2_Health` (−30, 0, 20): 서쪽 낮은 벽 뒤 / `S1_2_Ammo` (31, 0, 2): 동쪽 상자 L 옆 | 문이 저격 레인 시작점: 문 앞에서 탑 망대(`Perch`)가 바로 보인다(테스트). 원래 받침(plinth) 제거 |
+| 1-3 (120, 밤) | `S1_3_AmmoRoom`(`AmmoPickup`, 속성 `Weapon = "Pistol"`) | 저격총은 가운데 사당에 그대로. `S1_3_HealthW` (−12, 0, 12), `S1_3_HealthE` (44, 0, −12), `S1_3_AmmoNW` (−44, 0, −18) | 문 양옆 가로등 (±11, 44). 방 안 천장등 + 문 위 등 |
+
+모든 몬스터 구역은 방(벽 포함)과 겹치지 않는다(검사). 경기장 배치는 남쪽 스폰 패드·칠판·가로등만 바뀌었다.
+
+### 4. StageService
+
+- `Load`: 지은 모델에서 이름이 `StartDoor`이고 **태그가 없는** BasePart(= 문 Geometry, 마커 제외)를 모두 찾아 닫힌 CFrame을 기억한다. 이동량은 `StartDoor` 마커의 `Slide`, 없으면 가장 큰 파트의 긴 가로축 방향으로 그 폭만큼(손으로 지은 맵 대비).
+- `OpenStartDoor()`: 멱등. 문 파트 전부를 TweenService로 0.6초(Quad Out) 미끄러뜨리고, 0.6초 뒤 최종 위치로 맞추고 `CanCollide = false`, `CanQuery = false`. 스테이지가 그 사이에 내려가도 안전(부모 없는 파트는 건너뜀). 문이 없으면 아무것도 안 한다.
+- `StartDoorPosition()`: 스테이지가 없으면 nil, 있으면 **닫힌 문 중심**(StartDoor 마커 위치, 월드). 열린 뒤에도 같은 값.
+- `Unload`: 문 상태 초기화. 로비는 영향 없음.
+- 닫힌 문은 `GeometryParams`에 포함되므로 몬스터 시야·사격 검증에서도 벽이다.
+
+### 5. 검사기 추가 규칙
+
+- 스테이지마다 `StartDoor` 정확히 1개, `StartRoom` 정확히 1개, `Size` 속성 형식(`"x,y,z"`, 양수).
+- 모든 `PlayerSpawn`이 StartRoom 상자 안. `StartDoor`가 방 벽(안쪽 + 2.5) 위.
+- **밀폐(문 닫힘)**: 문은 벽으로, 플레이어가 밑으로 지나갈 수 있는 것(바닥 + 5 이상에 떠 있는 파트: 지붕·문 위 벽)은 빼고 1스터드 격자를 만든 뒤, 넉넉한 점프(7.5)로 스폰에서 채우기 → 방 안쪽(+0.5) 밖의 칸이 하나라도 닿으면 오류. 문 없는 문틀, 빠진 벽, 바닥에서 6 떠 있는 벽, 지붕 없는 6 높이 벽은 모두 잡힌다(테스트).
+- **시야 밀폐**: 문이 닫힌 상태에서 어느 스폰에서도 어떤 적 마커도 보이지 않아야 한다.
+- **지붕 오르기**: 경기장 쪽에서 방 주변 4스터드 안에 지붕 높이 − 7.5 이상인 칸에 닿으면 오류(방 옆에 8 높이 상자 피라미드 → 잡힘).
+- **지붕 아래 높이 보정**: 방 안(벽 포함)에서 천장까지 5 미만인 칸(벽 위, 칠판 윗면)은 벽으로 본다. 높이맵이 지붕 밑 벽 위를 걸어 다니지 않게 하기 위함.
+- **도달성은 문 열림 기준**: 문·지붕·문 위 벽을 뺀 격자. 문 바로 앞 경기장 칸이 스폰에서 닿아야 한다.
+- 몬스터 구역 원이 방 상자(+ 벽 1)와 겹치면 오류.
+- `HealthPickup` / `AmmoPickup`: `Id` 필수, 무기·체력·탄약 픽업 전체에서 `Id` 고유, 0~4 아래 바닥, 머리 위 3, 걸어서 도달.
+- "스폰에서 보이는 레드" 통계(1-2 경고)는 이제 **문 밖 3스터드에서 본 것**으로 잰다.
+
+### 6. 테스트·검사 결과
+
+```
+ok   tests/maps.spec.luau — maps.spec: 447 checks passed (Lobby, S1_1, S1_2, S1_3)
+== map dump  ok — 4 maps ok
+CHECK PASS
+```
+```
+ok   S1_1: 178 parts, 12 markers, red weight 4, reach 91.7%, traps 0, reds seen from spawn/door 1, start room 14x12x10 (leak 0), pickups W0 H1 A0
+ok   S1_2: 190 parts, 14 markers, red weight 3, reach 95.7%, traps 0, reds seen from spawn/door 3, start room 14x12x10 (leak 0), pickups W1 H1 A1
+  warn:  S1_2: every Red marker is visible from the spawn   (의도: 문 밖에서 높은 곳의 레드가 보임)
+ok   S1_3: 244 parts, 21 markers, red weight 5, reach 96.3%, traps 0, reds seen from spawn/door 4, start room 14x12x10 (leak 0), pickups W1 H2 A2
+```
+
+새 테스트: 키트(마커·속성, 문 6×8 흰색, 벽 ≥ 10 + 지붕, 열린 문이 포켓 벽 속에 숨음, 스폰이 칠판을 봄, 4방향 × 좌우 반전 8가지 방이 모두 검사 통과, `Slide`가 길이 6이고 문 벽과 평행), 검사기 실패 사례(StartDoor/StartRoom 없음, Size 형식, 방 밖 스폰, 문 없는 문틀, 벽 빠짐, 떠 있는 벽, 낮은 벽 + 지붕 없음, 지붕 오르기, 구역 겹침, Id 없음·중복(체력/탄약/무기 사이), 떠 있는 체력, 못 가는 탄약), 스테이지(방 1개·남쪽·14×10·스폰과 칠판이 방 안·문이 북쪽 벽·방 중심에서 모든 적 마커 안 보임·체력 1~2·탄약 ≤ 2(1-2, 1-3은 ≥ 1)·체력은 경기장에·1-2 저격총은 방 안·1-3 방 안 권총 탄약 1개 + 저격총은 방 밖·1-2 문 앞/문간에서 망대가 보임).
+
+- **자동 검사 상태: 통과** (`tools/check.sh` → `CHECK PASS`)
+- **플레이 검증 상태: 검수 대기**
+
+### 7. Studio 검수 체크리스트 (v0.5)
+
+1. 서버 Command Bar(Play 중): `local S = require(game.ServerScriptService.Server.Services.StageService); local h = S:Load("1-1"); print(#h.Markers.PlayerSpawn, #h.Markers.StartDoor, #h.Markers.StartRoom, h.Markers.StartRoom[1]:GetAttribute("Size"), #(h.Markers.HealthPickup or {}))` → `4 1 1 14,12,10 1`.
+   1-2: WeaponPickup 1, HealthPickup 1, AmmoPickup 1. 1-3: WeaponPickup 1, HealthPickup 2, AmmoPickup 2.
+2. `print(S:StartDoorPosition())` → 1-1 `2002, 4, 33.5` / 1-2 `2002, 4, 43.5` / 1-3 `2002, 4, 48.5`. `S:Unload(); print(S:StartDoorPosition())` → `nil`.
+3. 캐릭터를 스폰으로: `game.Players:GetPlayers()[1].Character:PivotTo(h.Markers.PlayerSpawn[1].CFrame)` → 나무 바닥 위에 서서 오른쪽 끝 벽의 칠판을 정면으로 본다. 흰 문은 왼쪽 앞(북쪽 벽).
+4. **문이 닫힌 동안**: 점프·벽 비비기로 방을 못 나간다. 문을 통과할 수 없다. 천장·벽 너머로 경기장이 보이지 않는다(지붕 있음). 방 안이 충분히 밝다(천장등). 1-3(밤)에서도 칠판 글씨가 읽힌다.
+5. `S:OpenStartDoor()` → 흰 문이 약 0.6초 동안 왼쪽(서쪽) 벽 속으로 미끄러져 사라지고, 그 뒤 통과할 수 있다. 다시 `S:OpenStartDoor()`를 불러도 아무 변화 없음. 문이 벽 밖으로 삐져나오거나 깜빡이지 않는다(손잡이 포함).
+6. 문을 나가 경기장에서 돌아보면 방이 회색 콘크리트 상자 + 남색 띠 + 흰 문(열린 뒤엔 빈 문틀) + 문 위 등으로 보인다. 방 지붕 위로 올라갈 방법이 없다.
+7. 열린 문으로 몬스터(B 연동 후)가 방까지 쫓아올 수는 있지만, 문이 닫힌 카운트다운 동안에는 어떤 몬스터 구역도 방에 닿지 않는다.
+8. **1-2**: 스폰 바로 앞 바닥에 저격총 마커(무기 A 연동 후 떠서 도는 저격총). 문 밖으로 한 걸음 나가면 북쪽 끝 탑 망대가 정면에 보인다.
+9. **1-3**: 방 안 바닥에 탄약 상자(`AmmoPickup`, `Weapon = "Pistol"`), 저격총은 여전히 가운데 사당 안.
+10. 체력(빨간 십자)·탄약(초록) 상자가 미리보기 위치에 있고, 바닥에서 약 2 위에 떠 있다(A가 모델을 그린 뒤).
+11. C 연동 후: 카운트다운 = 방 단계, 문 5스터드 안에서 E/손 버튼 → 문 열림 + 타이머 시작, 20초 뒤 자동 열림.
+12. 미리보기 PNG와 Studio 모습 비교.
+
+### 8. 미리보기
+
+`lune run tools/dump_maps.luau && python3 tools/map_preview.py` → `build/previews/`
+- `Lobby_top.png`, `Lobby_iso.png` (변경 없음)
+- `S1_1_top.png`, `S1_1_iso.png`, `S1_2_top.png`, `S1_2_iso.png`, `S1_3_top.png`, `S1_3_iso.png`
+
+top: 하늘색 점선 = 시작 방(지붕 숨김), 옆 상자에 "start room 14×10, h12" + 방 안 물건 목록, 흰 막대 + 검은 테두리 = 문, 점선 칸 + 흰 화살표 = 열린 위치, 빨간 십자 = 체력, 초록 상자(노란 줄) = 탄약. iso: 방 지붕과 카메라 쪽 벽 반투명, 문 테두리 검은 선, 방 바닥 하늘색 점선. 세 스테이지 PNG를 직접 열어 보고 라벨 겹침을 고쳤다.
+
+### 9. 알려진 한계
+
+- `Light` 파트의 PointLight는 `Shadows = false`라서 방 천장등 빛이 벽 너머로 조금 샌다(눈에 띄면 MapBuilder에서 방 안 Light만 Shadows를 켜면 됨).
+- 문 열림 트윈은 서버에서 CFrame을 바꾸므로 클라이언트에서는 복제 주기만큼 약간 끊겨 보일 수 있다.
+- 밀폐 검사는 1스터드 높이맵 근사다. 1스터드보다 좁은 틈은 못 잡지만 사람도 못 지나간다. 지붕 없는 방은 "벽 높이 > 7.5"로만 막는다.
+- `Kit.startRoom`의 다른 방향(`+z/±x`)과 좌우 반전은 단위 테스트로만 검증했다(지금 맵은 모두 남쪽 `-z`).
+- 문 열림 소리 키가 `Config/Audio`에 없어 소리는 넣지 않았다.
+- 1-1에는 탄약 픽업이 없다(과제 허용 범위, 레드 1마리 판).
+
+### 10. 계약 변경 제안 (v0.5)
+
+1. §3.7 마커 표: `StartDoor`에 선택 속성 `Slide`("x,y,z", 열린 위치 이동량), `Width`, `Height`와 "`Rot`의 LookVector = 경기장 쪽" 을 적자. C가 손 버튼 위치·방향에 쓸 수 있다.
+2. §3.9 마커 높이에 `HealthPickup`/`AmmoPickup` = 바닥 + 2(무기와 같음) 추가.
+3. `AmmoPickup`의 선택 속성 `Weapon`(예: "Pistol") — 지금은 힌트일 뿐이고 규칙은 "들고 있는 무기 +50%". A가 쓸지 정해 주면 좋겠다.
+4. `Config/Audio`에 `DoorOpen` 키 → StageService가 `OpenStartDoor`에서 재생(서버 3D 소리) 또는 C가 재생.
+5. 문 파트 이름 규칙(`StartDoor` = 움직이는 문 파트, `Geometry` 폴더 안 / 마커 파트도 이름이 `StartDoor`이지만 `Markers` 폴더 + 태그)을 §3.7에 적어 두면 다른 에이전트가 `FindFirstChild("StartDoor", true)`로 마커를 잘못 잡는 일을 막을 수 있다.

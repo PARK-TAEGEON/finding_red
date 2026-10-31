@@ -2,7 +2,7 @@
 -- Stage 1-2 "높은 곳" (high places). Owner: D. ~110×110, Day.
 -- Idea: Reds stand on rooftops. Two rooftops are reachable by stairs (brick house west, concrete block east);
 -- a marble tower at the far north end is NOT reachable on foot but sits at the end of a clear sniping lane
--- straight up the middle from the spawn. A Sniper lies on a plinth right next to the spawn.
+-- straight up the middle from the start-room door. The Sniper lies on the start room floor (v0.5).
 -- One White wanders the open middle field to punish players who run straight in.
 return function(K: any): any
 	local parts, markers = {}, {}
@@ -12,12 +12,16 @@ return function(K: any): any
 	K.floor(parts, { 0, 0, 0 }, { W, D }, "Tile")
 	K.perimeter(parts, { W, D })
 
-	-- Spawn (south middle), board to the left so the middle lane stays open, sniper on the right
-	K.spawnPad(parts, { 0, 0, 49 }, { 16, 6 })
-	K.spawnRow(markers, { 0, 0.2, 49 }, 4, 3.5, "x", { 0, 0 })
-	K.board(parts, markers, { -15, 0, 43 }, { 0, 49 }, { w = 10, h = 6 })
-	local top = K.plinth(parts, { 13, 0, 45 })
-	K.weapon(markers, top, "Sniper", "S1_2_Sniper")
+	-- Start room (south middle) with the Sniper lying on its floor. The door (x = 2) opens straight onto
+	-- the sniping lane up the middle of the arena.
+	local room = K.startRoomSouth(parts, markers, D, 0)
+	K.weapon(markers, room.spots[1], "Sniper", "S1_2_Sniper")
+	K.lamp(parts, { -11, 0, 40 })
+	K.lamp(parts, { 11, 0, 40 })
+
+	-- Health behind the west low wall, ammo east of the lane by the crate L
+	K.health(markers, { -30, 0, 20 }, "S1_2_Health")
+	K.ammo(markers, { 31, 0, 2 }, "S1_2_Ammo")
 
 	-- West: brick house, roof at 8, stairs along the west wall going north ----------------
 	K.platform(parts, { -44, 8, -16 }, { 22, 20 }, {

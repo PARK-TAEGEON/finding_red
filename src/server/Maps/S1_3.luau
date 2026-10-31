@@ -3,7 +3,7 @@
 -- Idea: Reds walk among three White groups in a night garden of low brick walls (jumpable cover).
 -- A fenced pen in the north-east holds three more Whites (look, don't touch). The Sniper sits on a plinth
 -- inside a small walled shrine in the middle of the map, right next to the northern White group,
--- so grabbing it is a risk. Lamp posts keep every area lit.
+-- so grabbing it is a risk. Lamp posts keep every area lit. v0.5: start room with pistol ammo, two health boxes.
 return function(K: any): any
 	local parts, markers = {}, {}
 	local gimmicks = {}
@@ -13,12 +13,15 @@ return function(K: any): any
 	K.floor(parts, { 0, 0, 0 }, { W, D }, "Tile", { tile = 12 })
 	K.perimeter(parts, { W, D })
 
-	-- Spawn (south middle) + board ----------------------------------------------------
-	K.spawnPad(parts, { 0, 0, 53 }, { 16, 6 })
-	K.spawnRow(markers, { 0, 0.2, 53 }, 4, 3.5, "x", { 0, 0 })
-	K.board(parts, markers, { 0, 0, 44 }, { 0, 53 }, { w = 10, h = 6 })
-	K.lamp(parts, { -10, 0, 50 })
-	K.lamp(parts, { 10, 0, 50 })
+	-- Start room (south middle) with a box of pistol ammo; the Sniper stays out in the shrine ------------
+	local room = K.startRoomSouth(parts, markers, D, 0)
+	K.ammo(markers, room.spots[1], "S1_3_AmmoRoom", "Pistol")
+	K.lamp(parts, { -11, 0, 44 })
+	K.lamp(parts, { 11, 0, 44 })
+	-- health in the open between the west garden and the shrine, and on the east side by the pen
+	K.health(markers, { -12, 0, 12 }, "S1_3_HealthW")
+	K.health(markers, { 44, 0, -12 }, "S1_3_HealthE")
+	K.ammo(markers, { -44, 0, -18 }, "S1_3_AmmoNW")
 	-- a little cover between the spawn and the middle (crate stacks block the first look)
 	K.crates(parts, { -14, 0, 28 }, "stack2")
 	K.crates(parts, { 12, 0, 24 }, "stack2")
