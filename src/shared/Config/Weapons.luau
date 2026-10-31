@@ -35,6 +35,14 @@ local Weapons: { Order: { string }, Default: { string }, [string]: any } = {
 	Order = { "Bat", "Pistol", "Sniper", "Rifle", "Shotgun", "Grenade", "Rocket" },
 	Default = { "Bat", "Pistol" },
 
+	-- v0.5 (§1.12.6): map pickups. Not a weapon entry (no Kind), so lookups by weapon id skip it.
+	Pickups = {
+		Reach = 4, -- studs, horizontal
+		Health = 40, -- HealthPickup -> Flow:HealPlayer(p, 40)
+		AmmoPercent = 50, -- AmmoPickup -> equipped gun reserve + 50% of its base Reserve
+		AmmoCapMultiplier = 2, -- reserve never above Reserve × 2
+	},
+
 	Bat = {
 		Name = "방망이",
 		Kind = "Melee",

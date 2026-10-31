@@ -12,6 +12,7 @@ local Net = require(Shared.Net)
 local WeaponMath = require(Shared.WeaponMath)
 local WeaponsConfig = require(Shared.Config.Weapons)
 local WeaponModels = require(Shared.Models.WeaponModels)
+local GameConfig: { [string]: any } = require(Shared.Config.Game) :: any
 -- Agent B owns this file and may still be filling it: read it defensively as untyped data.
 local EnemiesConfig: { [string]: any } = require(Shared.Config.Enemies) :: any
 
@@ -20,8 +21,23 @@ type Spec = WeaponsConfig.WeaponSpec
 local WeaponService = {}
 
 local PICKUP_TAG = "WeaponPickupDisplay"
-local PICKUP_REACH = 4
 local PICKUP_INTERVAL = 0.2
+local PICKUP_CFG: { Reach: number, Health: number, AmmoPercent: number, AmmoCapMultiplier: number } = {
+	Reach = 4,
+	Health = 40,
+	AmmoPercent = 50,
+	AmmoCapMultiplier = 2,
+}
+do
+	local cfg = WeaponsConfig.Pickups
+	if type(cfg) == "table" then
+		for key, value in pairs(PICKUP_CFG) do
+			if type(cfg[key]) == "number" and cfg[key] == cfg[key] then
+				(PICKUP_CFG :: any)[key] = cfg[key]
+			end
+		end
+	end
+end
 local RELOAD_SERVER_FACTOR = 0.9 -- server finishes a little early so the client's "done" never races it
 
 type PlayerState = {
@@ -37,7 +53,9 @@ type PlayerState = {
 	ReloadWeapon: string?,
 }
 
-type Pickup = { MarkerId: string, Weapon: string, Pos: Vector3, Model: Model }
+type PickupKind = "Weapon" | "Health" | "Ammo"
+-- Key = claim key (WeaponMath.pickupKey): raw MarkerId for weapons, "Health:<Id>" / "Ammo:<Id>" otherwise.
+type Pickup = { Key: string, Kind: PickupKind, Weapon: string?, Pos: Vector3, Model: Model }
 
 local ctx: Types.Context
 local effectRemote: RemoteEvent
@@ -46,6 +64,7 @@ local states: { [Player]: PlayerState } = {}
 local claimed: { [Player]: { [string]: boolean } } = {}
 local pickups: { Pickup } = {}
 local pickupFolder: Folder? = nil
+local preparedModel: Model? = nil -- handle.Model of the stage whose pickups exist
 
 -- Helpers --------------------------------------------------------------------------------------
 local function specOf(id: any): Spec?
@@ -414,46 +433,106 @@ local function onEquip(player: Player, weaponId: any)
 end
 
 -- Pickups ------------------------------------------------------------------------------------------------
-local function claim(player: Player, st: PlayerState, pk: Pickup)
-	local mine = claimed[player]
-	if not mine then
-		mine = {}
-		claimed[player] = mine
+-- Claim rule (v0.5, documented in docs/reports/A.md): pickups only exist between PrepareStage
+-- (Countdown = start room) and ClearStage (Result starts). A player may claim while that stage is still
+-- Stage:Current(), they are in Flow:GetParty() and Flow:GetLife() == "Alive". The phase is not checked,
+-- so start-room weapon pickups work before the door opens; arena pickups are behind the closed door.
+-- Each claim is per player and per marker; a claim that would do nothing (full HP, Bat equipped,
+-- reserve at cap) is not recorded, so the player can come back later.
+local function send(player: Player, pk: Pickup, text: string, extra: { [string]: any }?)
+	local data: { [string]: any } = { Kind = "PickedUp", Marker = pk.Key, Item = pk.Kind, Text = text }
+	if extra then
+		for k, v in pairs(extra) do
+			data[k] = v
+		end
 	end
-	mine[pk.MarkerId] = true
-	local spec = specOf(pk.Weapon)
-	if not spec then
-		return
+	feedbackRemote:FireClient(player, data)
+	effectRemote:FireAllClients("Pickup", { UserId = player.UserId, Marker = pk.Key })
+end
+
+local function claimWeapon(player: Player, st: PlayerState, pk: Pickup): boolean
+	local weaponId = pk.Weapon
+	local spec = specOf(weaponId)
+	if not spec or weaponId == nil then
+		return true -- broken marker: record it so it is not retried every tick
 	end
-	if not st.Has[pk.Weapon] then
-		st.RoundOnly[pk.Weapon] = true
+	if not st.Has[weaponId] then
+		st.RoundOnly[weaponId] = true
 		rebuild(st)
 	end
-	fillAmmo(st, pk.Weapon)
+	fillAmmo(st, weaponId)
 	writeAll(player, st)
-	feedbackRemote:FireClient(player, {
-		Kind = "PickedUp",
-		Weapon = pk.Weapon,
-		Marker = pk.MarkerId,
-		Text = ("%s 획득!"):format(spec.Name),
-	})
-	effectRemote:FireAllClients("Pickup", { UserId = player.UserId, Marker = pk.MarkerId })
+	send(player, pk, ("%s 획득!"):format(spec.Name), { Weapon = weaponId })
+	return true
+end
+
+local function claimHealth(player: Player, pk: Pickup): boolean
+	local maxHp = if type(GameConfig.MaxHP) == "number" then GameConfig.MaxHP else 100
+	local before = player:GetAttribute("HP")
+	if WeaponMath.healGain(before, maxHp, PICKUP_CFG.Health) <= 0 then
+		return false -- full HP: leave it for later
+	end
+	ctx.Services.Flow:HealPlayer(player, PICKUP_CFG.Health)
+	local after = player:GetAttribute("HP")
+	local gained = if type(after) == "number" and type(before) == "number" then after - before else 0
+	if gained <= 0 then
+		return false -- Flow refused (e.g. went down this tick): do not burn the pickup
+	end
+	send(player, pk, ("체력 +%d"):format(math.floor(gained + 0.5)))
+	return true
+end
+
+local function claimAmmo(player: Player, st: PlayerState, pk: Pickup): boolean
+	local id = st.Equipped
+	local spec = specOf(id)
+	if id == nil or not spec or spec.Mag == nil then
+		return false -- Bat (or nothing) equipped: skip
+	end
+	local newReserve, added =
+		WeaponMath.ammoPickup(spec.Mag, spec.Reserve, st.Ammo[id] or 0, PICKUP_CFG.AmmoPercent, PICKUP_CFG.AmmoCapMultiplier)
+	if added <= 0 then
+		return false -- reserve already at the cap
+	end
+	st.Ammo[id] = newReserve
+	writeAmmo(player, st, id)
+	send(player, pk, ("탄약 +%d"):format(added), { Weapon = id })
+	return true
+end
+
+local function tryClaim(player: Player, st: PlayerState, pk: Pickup): boolean
+	if pk.Kind == "Health" then
+		return claimHealth(player, pk)
+	elseif pk.Kind == "Ammo" then
+		return claimAmmo(player, st, pk)
+	end
+	return claimWeapon(player, st, pk)
 end
 
 local function pickupStep()
 	if #pickups == 0 then
 		return
 	end
+	local current = ctx.Services.Stage:Current()
+	local stageCurrent = current ~= nil and current.Model == preparedModel
+	if not stageCurrent then
+		return
+	end
 	local Flow = ctx.Services.Flow
 	for _, player in ipairs(Flow:GetParty()) do
 		local st = states[player]
 		local root = characterPart(player, "HumanoidRootPart")
-		if st and root and Flow:GetLife(player) == "Alive" then
+		if st and root and WeaponMath.canClaim(true, stageCurrent, true, Flow:GetLife(player)) then
 			local mine = claimed[player]
+			if not mine then
+				mine = {}
+				claimed[player] = mine
+			end
+			local rootPos = vec(root.Position)
 			for _, pk in ipairs(pickups) do
-				if not (mine and mine[pk.MarkerId]) and WeaponMath.inReach(vec(root.Position), vec(pk.Pos), PICKUP_REACH, 6) then
-					claim(player, st, pk)
-					mine = claimed[player]
+				if not mine[pk.Key] and WeaponMath.inReach(rootPos, vec(pk.Pos), PICKUP_CFG.Reach, 6) then
+					if tryClaim(player, st, pk) then
+						mine[pk.Key] = true
+					end
 				end
 			end
 		end
@@ -506,31 +585,56 @@ function WeaponService.Start(self: Types.WeaponService)
 	end)
 end
 
+local function markerIdOf(marker: BasePart, fallback: string): string
+	local rawId = marker:GetAttribute("MarkerId")
+	if rawId ~= nil and tostring(rawId) ~= "" then
+		return tostring(rawId)
+	end
+	return fallback
+end
+
+local function addPickup(folder: Folder, kind: PickupKind, key: string, weaponId: string?, ground: Vector3, model: Model)
+	model.Name = "Pickup_" .. key
+	model:SetAttribute("MarkerId", key) -- the client hides displays by this key (Feedback.Marker)
+	model:SetAttribute("PickupKind", kind)
+	if weaponId then
+		model:SetAttribute("Weapon", weaponId)
+	end
+	CollectionService:AddTag(model, PICKUP_TAG)
+	model.Parent = folder
+	table.insert(pickups, { Key = key, Kind = kind, Weapon = weaponId, Pos = ground, Model = model })
+end
+
 function WeaponService.PrepareStage(self: Types.WeaponService, handle: Types.StageHandle)
 	WeaponService.ClearStage(self)
 	local folder = Instance.new("Folder")
 	folder.Name = "WeaponPickups"
-	local markers = handle.Markers["WeaponPickup"] or {}
-	for index, marker in ipairs(markers) do
+	local markerSets = handle.Markers :: { [string]: { BasePart }? }
+	for index, marker in ipairs(markerSets["WeaponPickup"] or {}) do
 		local weaponId = marker:GetAttribute("Weapon")
-		local rawId = marker:GetAttribute("MarkerId")
 		local spec = specOf(weaponId)
 		if spec and type(weaponId) == "string" then
-			local markerId = if rawId ~= nil and tostring(rawId) ~= "" then tostring(rawId) else ("WeaponPickup" .. index)
+			local key = WeaponMath.pickupKey("Weapon", markerIdOf(marker, "WeaponPickup" .. index))
 			local ground = groundBelow(marker.Position)
-			local model = WeaponModels.display(weaponId, spec.Name, CFrame.new(ground))
-			model.Name = "Pickup_" .. markerId
-			model:SetAttribute("MarkerId", markerId)
-			model:SetAttribute("Weapon", weaponId)
-			CollectionService:AddTag(model, PICKUP_TAG)
-			model.Parent = folder
-			table.insert(pickups, { MarkerId = markerId, Weapon = weaponId, Pos = ground, Model = model })
+			addPickup(folder, "Weapon", key, weaponId, ground, WeaponModels.display(weaponId, spec.Name, CFrame.new(ground)))
 		else
 			warn(("[WeaponService] WeaponPickup marker %s has unknown Weapon %s"):format(marker:GetFullName(), tostring(weaponId)))
 		end
 	end
+	local supplies: { { Tag: string, Kind: PickupKind } } = {
+		{ Tag = "HealthPickup", Kind = "Health" },
+		{ Tag = "AmmoPickup", Kind = "Ammo" },
+	}
+	for _, supply in ipairs(supplies) do
+		for index, marker in ipairs(markerSets[supply.Tag] or {}) do
+			local key = WeaponMath.pickupKey(supply.Kind, markerIdOf(marker, tostring(index)))
+			local ground = groundBelow(marker.Position)
+			addPickup(folder, supply.Kind, key, nil, ground, WeaponModels.supplyDisplay(supply.Kind, CFrame.new(ground)))
+		end
+	end
 	folder.Parent = handle.Model
 	pickupFolder = folder
+	preparedModel = handle.Model
 	table.clear(claimed)
 end
 
@@ -539,6 +643,7 @@ function WeaponService.ClearStage(self: Types.WeaponService)
 		pickupFolder:Destroy()
 		pickupFolder = nil
 	end
+	preparedModel = nil
 	table.clear(pickups)
 	table.clear(claimed)
 	for player, st in pairs(states) do

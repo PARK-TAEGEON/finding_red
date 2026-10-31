@@ -108,3 +108,85 @@
 6. **C(HUD)에게**: HUD `ScreenGui`의 `DisplayOrder`를 1 이상으로(A의 오버레이 = 0) 해야 스코프 위에 탄약 표시가 보임. 일시정지 메뉴는 `Modal = true`인 버튼을 넣어야 1인칭에서 커서가 풀림. 탄약 표시는 `Equipped`와 `Mag_<Equipped>`/`Ammo_<Equipped>`를 읽으면 되고 `Bat`은 이 속성이 없음(∞).
 7. **B에게**: `Effect Explosion`은 A의 `Explode`가 방송하고 A가 그림(불덩이+연기). B는 따로 그리지 않아도 됨. 몬스터 모델이 죽는 연출 중이면 `State = "Dead"`로 두면 클라 레이캐스트가 시체를 통과한다.
 8. **D에게**: `StageService:GeometryParams()`는 몬스터·캐릭터를 빼야 함(A는 방어적으로 몬스터/캐릭터 히트를 무시하고 계속 레이캐스트하긴 함). 픽업 전시물은 `workspace.Stage.WeaponPickups` 아래에 생기며 전부 `CanQuery=false`/`CanCollide=false`. `WeaponPickup` 마커는 바닥 위 10스터드 이내(아래로 레이캐스트해서 링을 바닥에 놓음).
+
+## v0.5 변경
+
+### 1. 바뀐 / 새 파일
+
+| 파일 | 내용 |
+|---|---|
+| `src/shared/Config/Weapons.luau` | `Pickups = { Reach = 4, Health = 40, AmmoPercent = 50, AmmoCapMultiplier = 2 }` 추가 (무기 항목 아님: `Kind` 없음, `Order`에 없음 → `WeaponsConfig[id]` 조회는 그대로 건너뜀) |
+| `src/shared/WeaponMath.luau` | 순수 함수 추가: `pickupKey(kind, id)`, `canClaim(prepared, stageCurrent, inParty, life)`, `healGain(hp, maxHp, amount)`, `ammoPickup(mag, reserveMax, reserve, percent, capMult) -> (newReserve, added)` |
+| `src/shared/Models/WeaponModels.luau` | `supplyDisplay("Health"|"Ammo", groundCf)` — 체력 = 흰 상자 + 면마다 빨간 십자(위 포함), 탄약 = 초록 상자 + 노란 띠 + 뚜껑·손잡이·탄 3발. 바닥 링(빨강/초록 빛). `worldModel(id)` — 3인칭용 무기(0.85배) |
+| `src/server/Services/WeaponService.luau` | 픽업을 `Weapon`/`Health`/`Ammo` 3종으로 일반화 (아래 규칙). `Config.Game.MaxHP` 읽음 |
+| `src/client/Controllers/WeaponController.luau` | 시작 방 클릭 무반응(아래), 3인칭 무기 초기화, 동료 궤적 시작점을 3인칭 무기 총구로 |
+| `src/client/Controllers/Weapon/Fx.luau` | 전시물 회전 대상이 `Weapon` 또는 `Item`(체력·탄약 상자) |
+| `src/client/Controllers/Weapon/ThirdPerson.luau` (새 파일) | 다른 플레이어 오른손에 무기 모델 (클라이언트 전용) |
+| `tests/weapons.spec.luau` | 45개 추가 → **193 checks** |
+
+### 2. 체력·탄약 픽업 (§1.12.6)
+
+- `PrepareStage`가 `handle.Markers.WeaponPickup` / `HealthPickup` / `AmmoPickup`를 모두 읽어 `workspace.Stage.WeaponPickups/Pickup_<key>` 전시물을 만든다 (태그 `WeaponPickupDisplay` 공통, 속성 `MarkerId = key`, `PickupKind`). 바닥은 기존처럼 아래로 레이캐스트.
+- **획득 키**: 무기는 마커 `MarkerId` 그대로(1차와 같음), 체력·탄약은 `"Health:<Id>"` / `"Ammo:<Id>"` — 태그가 다른 마커가 같은 Id를 써도 충돌하지 않음. `Feedback.Marker`·`Effect Pickup.Marker`도 이 키.
+- 서버 0.2초마다, 4스터드(수평)·높이차 6 이내면 자동 획득. 플레이어별·마커별 1회.
+- **체력**: `HP` 속성 < `MaxHP`일 때만 `Flow:HealPlayer(p, 40)`. 호출 뒤 `HP`가 실제로 올랐을 때만 획득 기록 → 피가 가득이면 그대로 남아서 나중에 다시 와서 먹을 수 있다. `Feedback {Kind="PickedUp", Item="Health", Text="체력 +N", Marker}` — **N은 실제로 회복된 양**(HP 75에서 먹으면 "체력 +25"; 40 미만일 수 있음).
+- **탄약**: 서버의 장착 무기 기준. 방망이(탄창 없음)면 건너뜀(기록 안 함). 예비탄 += `ceil(Reserve × 50%)`(최소 1), 상한 `Reserve × 2` (권총 +24 / 상한 96, 저격총 +5 / 상한 20). 이미 상한이면 건너뜀. `Feedback {Kind="PickedUp", Item="Ammo", Weapon, Text="탄약 +N", Marker}`. `Ammo_<Id>` 속성 갱신 → 클라 탄약 표시·재장전에 바로 반영.
+- 모두 `Effect("Pickup", {UserId, Marker})` 방송, 클라이언트는 `PickedUp`을 받으면 `Pickup` 소리 + 그 전시물을 **내 화면에서만** 숨김 (무기 픽업과 같은 코드).
+
+### 3. 픽업 가능 시점 (규칙)
+
+**"스테이지가 준비돼 있고(PrepareStage 후 ClearStage 전) 그 스테이지가 아직 `Stage:Current()`이며, 플레이어가 `Flow:GetParty()`에 있고 `Flow:GetLife() == "Alive"`"** 이면 획득 가능. 페이즈는 보지 않는다.
+- 이유: `GetState`는 호출 허용 목록에 없고 `IsPlaying()`은 시작 방(Countdown)에서 false라 쓸 수 없다. 픽업은 `PrepareStage`(Countdown 시작) ~ `ClearStage`(Result 시작) 사이에만 존재하므로 이 규칙 = Countdown + Playing.
+- 경기장의 체력·탄약 상자는 문이 닫혀 있어 시작 방 단계에 닿을 수 없다. 시작 방에 놓인 무기는 문 열기 전에 주울 수 있다.
+- 사격은 그대로 `Flow:IsPlaying()`일 때만 (오케스트레이터 패치 유지). 장착 전환·재장전은 시작 방에서도 가능.
+
+### 4. 시작 방 사격
+
+- 서버: 변경 없음(IsPlaying 게이트 유지). 클라 `T = seenTime()` 유지.
+- 클라: `Phase ~= "Playing"`이면 클릭해도 **아무 것도 안 함** (스윙·발사음·`DryFire`·자동 재장전 없음). 누른 채로 문이 열려도 자동 연사가 저절로 시작되지 않음(`Attack`에서 `triggerHeld`도 Playing일 때만 켬). 조준(우클릭)은 시작 방에서도 됨.
+
+### 5. 3인칭 무기 (동료)
+
+- `Weapon/ThirdPerson.luau`: 다른 플레이어의 `Equipped` 속성(서버가 이미 복제하는 값)을 보고 그 무기 모델을 만들어 매 프레임 R6 `Right Arm`(R15면 `RightHand`) 끝에 붙인다. 총은 손에서 앞으로(허리 높이), 방망이는 위·앞으로 기울여 든다. 리플리케이션 비용 0, 파트는 고정·충돌 없음·`CanQuery=false` (총알·레이캐스트에 영향 없음), `workspace.FR_ThirdPersonWeapons` 아래.
+- `Life`가 `Out`/`Spectating`이거나 `Equipped`가 없으면(로비·결과) 무기 없음. 250스터드 밖이거나 캐릭터가 없으면 숨김.
+- 동료의 사격 궤적은 이제 그 3인칭 무기의 총구에서 시작.
+
+### 6. 테스트·자동 검사
+
+- `tests/weapons.spec.luau` **193 checks passed** (새 45개: 키 충돌 없음, 획득 규칙 8가지 생명 상태, 회복량(가득·0·NaN·음수), 탄약(권총·저격·로켓 수치, 상한, 상한 초과 시 줄이지 않음, 방망이, NaN/∞/0%/배수<1), Config 수치)
+- `tools/check.sh` → **CHECK PASS** (타입 경고 0)
+
+### 7. Studio 검수 체크리스트 (v0.5)
+
+사전: D의 맵에 `HealthPickup`/`AmmoPickup` 마커(속성 `MarkerId`)가 있어야 함. 없으면 Studio에서 투명 파트에 태그 + `MarkerId` 속성을 달아 경기장 바닥 위 2스터드에 두면 됨.
+
+솔로
+1. 시작 방(Countdown): 바닥의 무기 전시물이 돌고 떠 있음. 걸어가면 획득("저격총 획득!" + `Pickup` 소리, 내 화면에서 사라짐). 문 열기 전.
+2. 시작 방에서 좌클릭/모바일 공격: **아무 반응 없음**(소리·스윙·궤적·탄 감소 없음). 1/2/3·Q 전환과 우클릭 조준은 됨.
+3. 좌클릭을 누른 채 문 열기 → 문이 열려도 저절로 쏘지 않음. 다시 클릭하면 정상 사격.
+4. 경기장의 체력 상자: 흰 상자에 빨간 십자(네 옆면 + 윗면), 빨간 빛 링 위에서 돌며 떠 있음. 탄약 상자: 초록 상자 + 노란 띠 + 위에 탄 3발, 초록 링.
+5. HP 100에서 체력 상자로 가면 **안 먹어짐**(그대로 보임). 레드에게 맞아 HP 60 → 다시 가면 "체력 +40", HP 100, 상자가 내 화면에서 사라짐. HP 80에서 먹으면 "체력 +20".
+6. 권총 예비탄 48(가득)에서 탄약 상자 → "탄약 +24", `Ammo_Pistol = 72`. 방망이를 든 채로 가면 안 먹어짐 → 권총으로 바꾸면 그 자리에서 먹어짐. 예비탄 96이면 안 먹어짐.
+7. 저격총을 든 채로 → `Ammo_Sniper` 10 → 15.
+8. 쓰러진 상태로 상자 위를 지나가도 안 먹어짐.
+9. 한 번 먹은 상자 자리로 다시 가도 다시 안 먹어짐. 다음 판엔 다시 보임.
+
+클라이언트 2명
+1. A가 체력·탄약 상자를 먹으면 A 화면에서만 사라지고 B는 따로 먹을 수 있음. `Pickup` 소리는 먹은 사람만.
+2. **3인칭 무기**: B 화면에서 A의 오른손에 A가 든 무기(권총/방망이/저격총)가 보이고, A가 1/2/3을 바꾸면 B 화면의 무기도 바뀜. 걸을 때 팔과 함께 흔들림. 로비·결과 화면에선 맨손.
+3. A가 쏘면 B 화면의 궤적이 A 손의 총구에서 시작.
+4. 3인칭 무기가 총알을 막지 않음(동료 손 근처의 레드도 맞음).
+
+### 8. 알려진 한계 (v0.5)
+
+- 3인칭 무기는 **팔 애니메이션이 없다**: 캐릭터는 툴을 든 것이 아니므로 팔이 내려간 채로 걷기 흔들림을 따른다(총은 허리 높이에서 앞을 향함). 팔을 드는 자세는 로컬 애니메이션/Motor6D 조작이 필요해 이번엔 뺐다. 위치·각도(`R6_GUN`, `R6_GRIP.Bat`)는 Studio에서 눈으로 보고 조정 필요할 수 있음.
+- 체력 획득 문구는 실제 회복량("체력 +25" 등)이다. 항상 "+40"으로 보이길 원하면 한 줄 수정.
+- 탄약 상자는 **장착 중인 총만** 채운다(과제 지시대로). 방망이를 들고 있으면 먹어지지 않는다.
+- 예비탄 상한이 `Reserve × 2`로 늘었으므로 HUD가 예비탄 최대값을 `Reserve`로 가정하고 막대를 그린다면 넘칠 수 있음(C 확인).
+- 체력 판정은 `HP` 속성을 읽는다(StageFlow가 쓰는 값). `HealPlayer` 후 값이 안 오르면 기록하지 않는다.
+
+### 9. 계약 변경 제안 (v0.5)
+
+1. `Feedback PickedUp`에 `Item: "Weapon"|"Health"|"Ammo"` 필드 추가 기록(HUD가 아이콘을 고를 때 쓸 수 있음). 체력·탄약은 `Weapon` 대신(탄약은 대상 총 Id를 `Weapon`에 담음).
+2. `Config/Weapons.Pickups` 스키마(`Reach`, `Health`, `AmmoPercent`, `AmmoCapMultiplier`)를 §3.6에 기록.
+3. §3.9의 "서버는 `IsPlaying()`이 false면 픽업을 받지 않는다"를 v0.5 시작 방에 맞게 "픽업은 스테이지 준비~결과 시작 사이, Alive 파티원만"으로 고치기.

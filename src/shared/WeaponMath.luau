@@ -356,6 +356,59 @@ function WeaponMath.inReach(a: Vec3, b: Vec3, reach: number, maxDy: number?): bo
 	return dx * dx + dz * dz <= reach * reach and math.abs(a[2] - b[2]) <= (maxDy or 6)
 end
 
+-- Claim key for a pickup marker. Weapon pickups keep their raw MarkerId (wave-1 behaviour);
+-- health/ammo markers are namespaced so an Id reused across tags can never collide.
+function WeaponMath.pickupKey(kind: string, markerId: string): string
+	if kind == "Weapon" then
+		return markerId
+	end
+	return kind .. ":" .. markerId
+end
+
+-- May this player claim pickups right now? (v0.5 start room)
+-- Pickups exist from PrepareStage (Countdown = start room) until ClearStage (Result starts), so the
+-- rule is: a stage is prepared AND it is still the current stage AND the player is an Alive party
+-- member. Phase is not consulted on purpose: start-room weapon pickups must work before the door opens.
+function WeaponMath.canClaim(prepared: boolean, stageCurrent: boolean, inParty: boolean, life: any): boolean
+	return prepared and stageCurrent and inParty and life == "Alive"
+end
+
+-- Health pickup: HP actually restored (0 = skip, leave the pickup for later).
+function WeaponMath.healGain(hp: any, maxHp: number, amount: number): number
+	if not finite(hp) or not finite(maxHp) or not finite(amount) or amount <= 0 then
+		return 0
+	end
+	if hp <= 0 or hp >= maxHp then
+		return 0 -- full HP (or down: Flow does not heal Downed players anyway)
+	end
+	return math.min(maxHp, hp + amount) - hp
+end
+
+-- Ammo pickup for one gun: add `percent`% of the weapon's base reserve (rounded up, at least 1)
+-- to the current reserve, capped at reserveMax × capMultiplier.
+-- Returns (newReserve, added). added == 0 means "skip": melee, bad numbers, or reserve already at cap.
+function WeaponMath.ammoPickup(
+	magSize: number?,
+	reserveMax: number?,
+	reserve: number,
+	percent: number,
+	capMultiplier: number
+): (number, number)
+	if magSize == nil or reserveMax == nil or not finite(reserveMax) or reserveMax <= 0 then
+		return reserve, 0
+	end
+	if not finite(reserve) or not finite(percent) or percent <= 0 or not finite(capMultiplier) or capMultiplier < 1 then
+		return reserve, 0
+	end
+	local cap = math.floor(reserveMax * capMultiplier)
+	if reserve >= cap then
+		return reserve, 0
+	end
+	local add = math.max(1, math.ceil(reserveMax * percent / 100))
+	local newReserve = math.min(cap, math.max(0, reserve) + add)
+	return newReserve, newReserve - reserve
+end
+
 -- Explosions ----------------------------------------------------------------------------
 -- Full damage inside the radius (original-game feel: no falloff). 0 outside.
 function WeaponMath.blastDamage(center: Vec3, pos: Vec3, radius: number, damage: number): number

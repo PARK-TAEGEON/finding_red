@@ -180,7 +180,8 @@ local function spin(dt: number)
 			continue
 		end
 		if d.Weapon == nil or d.Weapon.Parent ~= inst then
-			local w = inst:FindFirstChild("Weapon")
+			-- weapon pickups spin "Weapon", health/ammo boxes (v0.5) spin "Item"
+			local w = inst:FindFirstChild("Weapon") or inst:FindFirstChild("Item")
 			if w and w:IsA("Model") then
 				d.Weapon = w
 				d.Base = w:GetPivot()

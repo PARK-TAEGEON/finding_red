@@ -329,4 +329,79 @@ function WeaponModels.display(id: string, name: string, groundCf: CFrame): Model
 	return container
 end
 
+-- Supply boxes (v0.5 §1.12.6) ---------------------------------------------------------------------
+-- Health: white box with a red cross on every side and the top. Ammo: green box with a yellow stripe.
+-- Built around the origin; the caller moves the pivot.
+local function buildHealthBox(): Model
+	local m = newModel("HealthBox")
+	local s = 1.6
+	local box = piece(m, "Box", BLOCK, Vector3.new(s, s, s), CFrame.new(), Color3.fromRGB(245, 245, 245))
+	local red = Color3.fromRGB(220, 30, 40)
+	local o, w, l = s + 0.04, 0.42, 1.1
+	-- Each bar only pokes out of the box along one axis, so each face shows exactly one cross.
+	piece(m, "CrossZ1", BLOCK, Vector3.new(w, l, o), CFrame.new(), red)
+	piece(m, "CrossZ2", BLOCK, Vector3.new(l, w, o), CFrame.new(), red)
+	piece(m, "CrossX1", BLOCK, Vector3.new(o, l, w), CFrame.new(), red)
+	piece(m, "CrossX2", BLOCK, Vector3.new(o, w, l), CFrame.new(), red)
+	piece(m, "CrossY1", BLOCK, Vector3.new(w, o, l), CFrame.new(), red)
+	piece(m, "CrossY2", BLOCK, Vector3.new(l, o, w), CFrame.new(), red)
+	m.PrimaryPart = box
+	return m
+end
+
+local function buildAmmoBox(): Model
+	local m = newModel("AmmoBox")
+	local green = Color3.fromRGB(70, 120, 50)
+	local box = piece(m, "Box", BLOCK, Vector3.new(2, 1.2, 1.3), CFrame.new(), green)
+	piece(m, "Lid", BLOCK, Vector3.new(2.06, 0.18, 1.36), CFrame.new(0, 0.52, 0), Color3.fromRGB(52, 92, 38))
+	piece(m, "Stripe", BLOCK, Vector3.new(2.04, 0.3, 1.34), CFrame.new(0, -0.05, 0), Color3.fromRGB(250, 210, 40))
+	piece(m, "Grip", BLOCK, Vector3.new(0.7, 0.14, 0.2), CFrame.new(0, 0.72, 0), Color3.fromRGB(40, 40, 44))
+	local brass = Color3.fromRGB(214, 170, 70)
+	for i = -1, 1 do
+		piece(m, "Round" .. (i + 2), CYL, Vector3.new(0.5, 0.16, 0.16), CFrame.new(i * 0.3, 0.86, 0.35) * CFrame.Angles(0, 0, math.rad(90)), brass, Enum.Material.Metal)
+	end
+	m.PrimaryPart = box
+	return m
+end
+
+-- Display container like WeaponModels.display: a "Ring" (PrimaryPart) on the ground and an "Item"
+-- model the client spins/bobs (Controllers/Weapon/Fx). kind = "Health" | "Ammo".
+function WeaponModels.supplyDisplay(kind: string, groundCf: CFrame): Model
+	local container = newModel("Pickup_" .. kind)
+	local isHealth = kind == "Health"
+	local glow = if isHealth then Color3.fromRGB(255, 90, 90) else Color3.fromRGB(120, 230, 90)
+	local ring = piece(
+		container,
+		"Ring",
+		CYL,
+		Vector3.new(0.2, 3.6, 3.6),
+		CFrame.new(groundCf.Position + Vector3.new(0, 0.1, 0)) * CFrame.Angles(0, 0, math.rad(90)),
+		glow,
+		Enum.Material.Neon
+	)
+	ring.Transparency = 0.4
+	local light = Instance.new("PointLight")
+	light.Color = glow
+	light.Range = 8
+	light.Brightness = 1.2
+	light.Parent = ring
+
+	local item = if isHealth then buildHealthBox() else buildAmmoBox()
+	item.Name = "Item"
+	item:PivotTo(CFrame.new(groundCf.Position + Vector3.new(0, 1.9, 0)))
+	item.Parent = container
+	container.PrimaryPart = ring
+	return container
+end
+
+-- Third-person weapon (client-only cosmetic on other players, v0.5): the normal weapon model, scaled
+-- to character size. Same pivot (grip) and front (-Z).
+function WeaponModels.worldModel(id: string): Model
+	local model = WeaponModels.build(id)
+	pcall(function()
+		model:ScaleTo(0.85)
+	end)
+	return model
+end
+
 return WeaponModels

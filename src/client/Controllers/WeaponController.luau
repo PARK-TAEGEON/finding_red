@@ -16,6 +16,7 @@ local WeaponFolder = script.Parent:WaitForChild("Weapon")
 local Viewmodel = require(WeaponFolder:WaitForChild("Viewmodel"))
 local Overlay = require(WeaponFolder:WaitForChild("Overlay"))
 local Fx = require(WeaponFolder:WaitForChild("Fx"))
+local ThirdPerson = require(WeaponFolder:WaitForChild("ThirdPerson"))
 
 type Spec = WeaponsConfig.WeaponSpec
 
@@ -366,6 +367,10 @@ end
 
 -- Remote events -----------------------------------------------------------------------------------------------
 local function otherShooterMuzzle(userId: number, fallback: Vector3): Vector3
+	local held = ThirdPerson.muzzle(userId)
+	if held then
+		return held
+	end
 	local other = Players:GetPlayerByUserId(userId)
 	local character = other and other.Character
 	local arm = character and (character:FindFirstChild("Right Arm") or character:FindFirstChild("RightHand"))
@@ -443,6 +448,7 @@ end
 function WeaponController.Start(self: Types.WeaponController)
 	Overlay.init(player:WaitForChild("PlayerGui"))
 	Fx.init()
+	ThirdPerson.init()
 
 	player:GetAttributeChangedSignal("Weapons"):Connect(readWeapons)
 	player:GetAttributeChangedSignal("Equipped"):Connect(readEquipped)
@@ -547,7 +553,9 @@ function WeaponController.SetEnabled(self: Types.WeaponController, on: boolean)
 end
 
 function WeaponController.Attack(self: Types.WeaponController, down: boolean)
-	triggerHeld = down and enabled
+	-- Start room (Countdown, v0.5): clicks do nothing at all — no swing, no dry fire, and a held
+	-- trigger does not start auto-fire the moment the door opens (fire() also checks the phase).
+	triggerHeld = down and enabled and ctx.State().Phase == "Playing"
 	if down then
 		fire(true)
 	end
