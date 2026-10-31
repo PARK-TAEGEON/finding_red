@@ -163,4 +163,75 @@ check(Flow.placement("Playing", true, "Alive", false) == "Lobby", "no stage load
 check(Flow.spawnSlot(1, 4) == 1 and Flow.spawnSlot(5, 4) == 1 and Flow.spawnSlot(6, 4) == 2, "round robin")
 check(Flow.spawnSlot(1, 0) == 0, "no markers")
 
+-- v0.5 start room + door (§1.12.3) and loading (§1.12.4)
+local Game = require("../src/shared/Config/Game")
+check(Flow.loadingRemaining(10, 10, 1.5) == 1.5, "loading: full wait at start")
+check(Flow.loadingRemaining(10, 11, 1.5) == 0.5, "loading: partial wait")
+check(Flow.loadingRemaining(10, 12, 1.5) == 0, "loading: slow build never waits extra")
+check(Flow.loadingRemaining(0 / 0, 12, 1.5) == 0, "loading: NaN safe")
+
+local roomEnds = Flow.startRoomEndsAt(100, Game.StartRoomSeconds)
+check(roomEnds == 100 + Game.StartRoomSeconds, "start room ends after StartRoomSeconds")
+check(Flow.startRoomEndsAt(100, -5) == 100, "negative start room seconds clamp")
+check(Flow.startRoomOutcome(100, roomEnds, false) == nil, "auto-open: waiting at start")
+check(Flow.startRoomOutcome(roomEnds - 0.05, roomEnds, false) == nil, "auto-open: not before EndsAt")
+check(Flow.startRoomOutcome(roomEnds, roomEnds, false) == "Auto", "auto-open exactly at EndsAt")
+check(Flow.startRoomOutcome(roomEnds + 3, roomEnds, false) == "Auto", "auto-open after EndsAt")
+check(Flow.startRoomOutcome(105, roomEnds, true) == "Door", "door opened early")
+check(Flow.startRoomOutcome(roomEnds + 1, roomEnds, true) == "Door", "door beats auto")
+
+-- door distance (flat, with a height window)
+check(Flow.doorDistance({ 0, 3, 0 }, nil, 8) == nil, "no door position -> nil")
+check(Flow.doorDistance({ 3, 3, 4 }, { 0, 6, 0 }, 8) == 5, "flat distance ignores height")
+check(Flow.doorDistance({ 0, 20, 0 }, { 0, 6, 0 }, 8) == math.huge, "far above the door")
+check(Flow.doorDistance({ 0 / 0, 3, 0 }, { 0, 6, 0 }, 8) == math.huge, "NaN root position")
+check(Flow.doorDistance({ 0, 3, 0 }, { math.huge, 6, 0 }, 8) == math.huge, "infinite door position")
+
+local function door(over: { [string]: any }): boolean
+	local req = {
+		Phase = "Countdown",
+		RoundMatches = true,
+		StartRoomOpen = true,
+		InParty = true,
+		Life = "Alive",
+		Distance = 3,
+		Range = Game.DoorInteractRange,
+	}
+	for k, v in pairs(over) do
+		req[k] = v
+	end
+	return Flow.canOpenDoor(req)
+end
+check(door({}), "door: valid request")
+check(door({ Distance = Game.DoorInteractRange }), "door: exactly at range")
+check(not door({ Distance = Game.DoorInteractRange + 0.01 }), "door: out of range")
+check(door({ Distance = nil :: any }), "door: unknown door position allows")
+check(not door({ Distance = 0 / 0 }), "door: NaN distance")
+check(not door({ Distance = math.huge }), "door: too high/low")
+check(not door({ Phase = "Playing" }), "door: already playing")
+check(not door({ Phase = "Lobby" }), "door: lobby")
+check(not door({ Phase = "Result" }), "door: result")
+check(not door({ RoundMatches = false }), "door: stale round id")
+check(not door({ StartRoomOpen = false }), "door: still loading / already open")
+check(not door({ InParty = false }), "door: spectator")
+check(not door({ Life = "Downed" }), "door: downed")
+check(not door({ Life = "Out" }), "door: out")
+check(not door({ Life = "Spectating" }), "door: spectating")
+
+-- the stage clock starts at the door, not at load
+local loadedAt, openedAt = 0, 15
+local limit = Rules.timeLimit(40, Game.TimeLimitMultiplier)
+local startedAt, endsAt = Flow.playWindow(openedAt, limit)
+check(startedAt == 15 and endsAt == 15 + limit, "play window starts at door open")
+check(Flow.failReason(nil, loadedAt + limit + 1, 10, startedAt, limit) == nil, "start-room time not counted")
+check(Flow.failReason(nil, endsAt + 0.1, 10, startedAt, limit) == "Time", "time limit from door")
+local fastRun = Flow.buildResult(Rules, {
+	StageId = "1-1", Cleared = true, Seconds = (openedAt + 39) - startedAt, ParTime = 40, Killed = 1, Target = 1,
+	PenaltyKills = 0, Reward = reward, PerRedOnFail = 2, Members = { { UserId = 1, PrevFlags = 0, RedKills = 1 } },
+})
+check(bit32.band(fastRun.Flags, 2) ~= 0, "fast stamp measured from the door (39 s after open)")
+local _, autoEnd = Flow.playWindow(roomEnds, limit)
+check(autoEnd == roomEnds + limit, "auto-open starts the clock at EndsAt")
+check(Flow.placement("Countdown", true, "Alive", false) == "Lobby", "loading (no stage yet) -> lobby")
+
 print(("flow.spec: %d checks passed"):format(checks))

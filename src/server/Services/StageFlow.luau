@@ -1,6 +1,9 @@
 --!strict
 -- Server match loop (CONTRACT §1.1–1.5, §3.4 StageFlow). Owner: C.
 -- Lobby -> Vote -> Countdown -> Playing -> Result -> (Next / Retry -> Countdown | Lobby).
+-- v0.5 (§1.12.3-4): Countdown = loading (EndsAt nil: clients show the loading overlay while the map
+-- is built and the party teleported) then start room (EndsAt = door auto-open time). The door opens
+-- on `Interact {Kind = "OpenDoor"}` or at EndsAt; Playing and the stage clock start at the door.
 -- Branchy decisions live in Flow/FlowLogic (pure, Lune-tested); this file does the Roblox side.
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -49,8 +52,13 @@ local spawnList: { BasePart } = {}
 local stageBase = 1
 local currentStageCfg: any = nil
 local lastReload: { [Player]: number } = {}
+local startRoomOpen = false -- v0.5: party stands in the start room, door still closed
+local doorOpened = false
 
 local VOID_Y = -100
+local DOOR_SLACK = 2 -- server range = DoorInteractRange + slack (latency, root vs. feet)
+local DOOR_MAX_RISE = 8 -- root may be this far above/below the door marker
+local TELEPORT_SETTLE = 0.3 -- keep the loading overlay up this long after teleporting
 local VOTE_MIN_SECONDS = 2
 local RESULT_MIN_SECONDS = 4
 local LOBBY_BOARD = "파인딩 레드\n준비 버튼을 누르면 출발!\n레드만 잡으세요!" -- 3 board lines (review fix #5)
@@ -312,11 +320,22 @@ local function cleanupStage()
 end
 
 -- Moves everyone to the lobby first (so nobody falls), then unloads the map.
+-- With no stage loaded (Vote -> first stage) nobody is moved, so lobby spectators are not yanked.
 local function leaveStage()
+	local hadStage = handle ~= nil
+	if not hadStage then
+		local ok, cur = pcall(function()
+			return ctx.Services.Stage:Current()
+		end)
+		hadStage = ok and cur ~= nil
+	end
 	handle = nil
 	spawnList = {}
-	for i, p in ipairs(Players:GetPlayers()) do
-		moveTo(p, lobbyCFrame(i))
+	startRoomOpen = false
+	if hadStage then
+		for i, p in ipairs(Players:GetPlayers()) do
+			moveTo(p, lobbyCFrame(i))
+		end
 	end
 	safe("Stage:Unload", function()
 		ctx.Services.Stage:Unload()
@@ -552,7 +571,12 @@ local function runStage(stageId: string): string?
 	pendingClear = false
 	votes = {}
 
-	-- Countdown
+	startRoomOpen = false
+	doorOpened = false
+
+	-- Loading (§1.12.4): Countdown with EndsAt = nil. Clients cover the screen while we
+	-- unload the old map, build the new one and teleport the party.
+	local loadingStarted = now()
 	state = {
 		Phase = "Countdown",
 		RoundId = roundId,
@@ -563,7 +587,7 @@ local function runStage(stageId: string): string?
 		ParTime = cfg.ParTime,
 		Party = partyIds(),
 		Keys = {},
-		EndsAt = now() + GameConfig.CountdownSeconds,
+		EndsAt = nil,
 	}
 	for _, p in ipairs(Players:GetPlayers()) do
 		if inParty(p) then
@@ -573,16 +597,23 @@ local function runStage(stageId: string): string?
 		end
 	end
 	broadcast()
+	task.wait(GameConfig.LoadingSeconds * 0.5) -- let the overlay fade in before anything moves
+	leaveStage() -- previous stage (Result -> Next/Retry): lobby first, then unload
+	if not prunedParty() then
+		return nil
+	end
 
-	local loaded: Types.StageHandle? = nil
-	safe("Stage:Load", function()
-		loaded = ctx.Services.Stage:Load(stageId)
+	local okLoad, loadedOrErr = pcall(function()
+		return ctx.Services.Stage:Load(stageId)
 	end)
-	if not loaded then
+	if not okLoad or type(loadedOrErr) ~= "table" then
+		if not okLoad then
+			warn("[FindingRed] Stage:Load failed:", loadedOrErr)
+		end
 		messageParty("스테이지를 불러오지 못했습니다")
 		return nil
 	end
-	local h = loaded :: Types.StageHandle
+	local h = loadedOrErr :: Types.StageHandle
 	handle = h
 	spawnList = {}
 	local markers = (h.Markers :: { [string]: { BasePart }? })["PlayerSpawn"]
@@ -607,19 +638,46 @@ local function runStage(stageId: string): string?
 		end)
 	end
 	refreshBoard()
-
-	waitUntil(state.EndsAt, function()
-		return not prunedParty()
-	end)
-	if #party == 0 then
+	local teleportedAt = now()
+	task.wait(math.max(
+		FlowLogic.loadingRemaining(loadingStarted, now(), GameConfig.LoadingSeconds),
+		FlowLogic.loadingRemaining(teleportedAt, now(), TELEPORT_SETTLE)
+	))
+	if not prunedParty() then
 		return nil
 	end
 
-	-- Playing
-	local startedAt = now()
+	-- Start room (§1.12.3): the party reads the board, picks up floor weapons and opens the door.
+	local roomEndsAt = FlowLogic.startRoomEndsAt(now(), GameConfig.StartRoomSeconds)
+	state.EndsAt = roomEndsAt
+	startRoomOpen = true
+	broadcast()
+	local outcome: ("Door" | "Auto")? = nil
+	waitUntil(nil, function()
+		if not prunedParty() then
+			return true
+		end
+		outcome = FlowLogic.startRoomOutcome(now(), roomEndsAt, doorOpened)
+		return outcome ~= nil
+	end)
+	startRoomOpen = false
+	if #party == 0 then
+		return nil
+	end
+	if not doorOpened then
+		-- auto-open at EndsAt
+		doorOpened = true
+		safe("Stage:OpenStartDoor", function()
+			ctx.Services.Stage:OpenStartDoor()
+		end)
+		messageParty("문이 열렸어요! 레드를 찾으세요")
+	end
+
+	-- Playing: the stage clock (ParTime, time limit) starts at the door.
+	local startedAt, playEndsAt = FlowLogic.playWindow(now(), timeLimit)
 	state.Phase = "Playing"
 	state.StartedAt = startedAt
-	state.EndsAt = startedAt + timeLimit
+	state.EndsAt = playEndsAt
 	pendingClear = FlowLogic.isCleared(state.Killed, state.Target)
 	broadcast()
 
@@ -715,30 +773,29 @@ local function runStage(stageId: string): string?
 		)
 	end)
 	local choice = Rules.voteWinner(options, FlowLogic.tally(votes, options), default)
-	leaveStage()
-	if #party == 0 then
+	local nextId = FlowLogic.resolveResultChoice(choice, StagesConfig.Order, stageId)
+	if #party == 0 or not nextId then
+		leaveStage()
 		return nil
 	end
-	local nextId = FlowLogic.resolveResultChoice(choice, StagesConfig.Order, stageId)
-	if nextId then
-		-- Players who joined during the run come along; everyone stands up again.
-		local late: { number } = {}
-		for _, p in ipairs(lateJoiners) do
-			if p.Parent then
-				table.insert(late, p.UserId)
-			end
+	-- Next / Retry: the next runStage unloads this map under its loading overlay.
+	-- Players who joined during the run come along; everyone stands up again.
+	local late: { number } = {}
+	for _, p in ipairs(lateJoiners) do
+		if p.Parent then
+			table.insert(late, p.UserId)
 		end
-		local ids = FlowLogic.nextParty(partyIds(), late, GameConfig.MaxPlayers)
-		local nextPartyList: { Player } = {}
-		for _, id in ipairs(ids) do
-			local p = Players:GetPlayerByUserId(id)
-			if p then
-				table.insert(nextPartyList, p)
-			end
-		end
-		party = nextPartyList
-		lateJoiners = {}
 	end
+	local ids = FlowLogic.nextParty(partyIds(), late, GameConfig.MaxPlayers)
+	local nextPartyList: { Player } = {}
+	for _, id in ipairs(ids) do
+		local p = Players:GetPlayerByUserId(id)
+		if p then
+			table.insert(nextPartyList, p)
+		end
+	end
+	party = nextPartyList
+	lateJoiners = {}
 	return nextId
 end
 
@@ -784,11 +841,54 @@ local function onVote(player: Player, option: any)
 	broadcast()
 end
 
+-- Interact {R, Kind = "OpenDoor"} (§1.12.3): any Alive party member near the door, in the start room.
+local function onOpenDoor(player: Player, payload: { [any]: any })
+	if not Net.throttle(player, "OpenDoor", 0.25) then
+		return
+	end
+	if doorOpened or not startRoomOpen then
+		return
+	end
+	local distance: number? = nil
+	local okPos, doorPos = pcall(function()
+		return ctx.Services.Stage:StartDoorPosition()
+	end)
+	if okPos and typeof(doorPos) == "Vector3" then
+		local root = rootOf(player)
+		if not root then
+			return
+		end
+		local r, d = root.Position, doorPos :: Vector3
+		distance = FlowLogic.doorDistance({ r.X, r.Y, r.Z }, { d.X, d.Y, d.Z }, DOOR_MAX_RISE)
+	end
+	local ok = FlowLogic.canOpenDoor({
+		Phase = state.Phase,
+		RoundMatches = Net.isNumber(payload.R) and payload.R == state.RoundId,
+		StartRoomOpen = startRoomOpen and not doorOpened,
+		InParty = inParty(player),
+		Life = if lives[player] then lives[player].Life else "Out",
+		Distance = distance,
+		Range = GameConfig.DoorInteractRange + DOOR_SLACK,
+	})
+	if not ok then
+		return
+	end
+	doorOpened = true -- runStage's start-room wait sees this within 0.1 s and enters Playing
+	safe("Stage:OpenStartDoor", function()
+		ctx.Services.Stage:OpenStartDoor()
+	end)
+	messageParty(player.DisplayName .. " 님이 문을 열었어요! 레드를 찾으세요")
+end
+
 local function onInteract(player: Player, payload: any)
 	if type(payload) ~= "table" then
 		return
 	end
 	local kind = payload.Kind
+	if kind == "OpenDoor" then
+		onOpenDoor(player, payload)
+		return
+	end
 	if kind == "ReviveStop" then
 		local rec = revives[player]
 		revives[player] = nil

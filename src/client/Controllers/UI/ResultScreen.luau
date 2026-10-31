@@ -24,11 +24,13 @@ local STAMPS = {
 	{ Bit = 4, Text = "깔끔", Caption = "레드만 처치" },
 }
 
+-- §1.12.5: original wording and order — 다시하기 | 다음 | 로비로
 local OPTION_TEXT: { [string]: string } = {
-	Next = "다음 스테이지",
+	Next = "다음",
 	Retry = "다시하기",
 	Lobby = "로비로",
 }
+local OPTION_ORDER: { [string]: number } = { Retry = 1, Next = 2, Lobby = 3 }
 
 function ResultScreen.new(
 	parent: Instance,
@@ -258,7 +260,7 @@ function ResultScreen.new(
 			if not b then
 				local created = Kit.button(buttons, "", {
 					Size = UDim2.fromOffset(160, 52),
-					LayoutOrder = i,
+					LayoutOrder = OPTION_ORDER[option] or (10 + i),
 					ZIndex = 23,
 				})
 				Kit.corner(created, UDim.new(0, 14))
