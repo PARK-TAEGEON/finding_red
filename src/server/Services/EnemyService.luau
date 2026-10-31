@@ -934,6 +934,12 @@ function EnemyService.SpawnStage(self: Types.EnemyService, handle: Types.StageHa
 	end
 
 	local count = math.max(0, math.floor(if type(redCount) == "number" and redCount == redCount then redCount else 0))
+	-- Shuffle so the largest-remainder leftovers land on random markers each round
+	-- (otherwise 1 Red over 4 equal markers always picks the same corner). Orchestrator fix.
+	for i = #reds, 2, -1 do
+		local j = math.random(1, i)
+		reds[i], reds[j] = reds[j], reds[i]
+	end
 	if #reds > 0 then
 		local weights = {}
 		for i, m in ipairs(reds) do
