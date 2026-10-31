@@ -450,6 +450,7 @@ WeaponService ──→ Enemy:Damage/Knockback/PositionAt/GetRadius/GetKind/IsAl
 - 맵 파트 이름이 `Light`면 PointLight가 붙는다 (임시 규칙, 2차에서 필드로 정식화).
 - 판 종료 순서: 결과 시작 시 `Enemy:ClearAll → Weapon:ClearStage → StripLoadout`, 결과 투표 후 **로비로 이동 → `Stage:Unload`** (`Unload`는 여러 번 불러도 안전).
 - 프로젝트 설정: `StarterPlayer.EnableMouseLockOption = false`, `Workspace.StreamingEnabled = false` (x=2000 스테이지가 늦게 스트리밍돼 추락하는 것 방지).
+- **v0.5 통합 보완**: 시체 규칙은 §1.12.2가 기준 (§2.6·위 항목의 "날려 보내기·3초 제거"는 폐기). 몬스터 설정에 `Behavior: "Chase" | "Flee"` 추가. 충돌 그룹 `FR_Player`·`FR_Corpse`는 B의 `Enemy/Corpse.luau`가 등록·관리한다. 클라이언트는 `Phase == "Countdown"`이고 `EndsAt == nil`이면 로딩 중, `EndsAt`이 있으면 시작 방으로 본다. `Feedback PickedUp`에 `Item` 필드, `Config/Weapons.Pickups` 표 추가. 픽업은 스테이지가 로드돼 있고 플레이어가 살아 있는 파티원이면 페이즈와 관계없이 가능 (시작 방 무기). 소리 키 `DoorOpen` 추가.
 - 2차로 미룸: `EnemyDeath`에 `Kind`, 열쇠 드롭(`Flow:GiveTeamKey`), 3인칭 무기 표시, 모바일 터치 감도, 모바일 점프 버튼 중복.
 
 ### 3.5 클라이언트 API

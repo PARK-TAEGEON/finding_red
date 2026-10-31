@@ -17,6 +17,7 @@ local Audio: { [string]: string } = {
 	Downed = "",
 	Revived = "",
 	Pickup = "",
+	DoorOpen = "",
 	Countdown = "",
 	StageClear = "",
 	StageFail = "",

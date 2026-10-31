@@ -193,6 +193,13 @@ def stage_fail():
     return norm(lowpass(arpeggio([392, 330, 262, 196], step=0.2, kind="square", hold=0.45), 2500), 0.7)
 
 
+def door_open():
+    n = noise(0.6)
+    slide = lowpass(highpass(n, 120), 900) * np.sin(np.linspace(0, np.pi, len(n))) * 0.7
+    clunk = tone(sweep(150, 70, 0.15), 0.15) * env(int(SR * 0.15), 0.001, 0.05)
+    return norm(seq(slide, clunk))
+
+
 def stamp():
     thunk = tone(sweep(260, 90, 0.18), 0.18) * env(int(SR * 0.18), 0.001, 0.05)
     slap = lowpass(noise(0.05), 2000) * env(int(SR * 0.05), 0.0005, 0.012)
@@ -204,7 +211,7 @@ EFFECTS = {
     "Reload": reload_, "DryFire": dry_fire, "HitMarker": hit_marker, "RedDeath": red_death,
     "PenaltyKill": penalty, "Alert": alert, "WhiteAttack": white_attack, "PlayerHurt": player_hurt,
     "Downed": downed, "Revived": revived, "Pickup": pickup, "Countdown": countdown,
-    "StageClear": stage_clear, "StageFail": stage_fail, "Stamp": stamp,
+    "StageClear": stage_clear, "StageFail": stage_fail, "Stamp": stamp, "DoorOpen": door_open,
 }
 
 

@@ -4,7 +4,7 @@
 다시 만들려면: `python3 tools/sfx/make_sfx.py`
 
 ## 올리는 방법
-1. Roblox Studio → **View → Asset Manager** → **Bulk Import**(또는 Creator Hub → Creations → Development Items → Audio → Upload)로 이 폴더의 `.ogg` 19개를 올린다. 계정에 따라 월 업로드 한도가 있을 수 있다.
+1. Roblox Studio → **View → Asset Manager** → **Bulk Import**(또는 Creator Hub → Creations → Development Items → Audio → Upload)로 이 폴더의 `.ogg` 20개를 올린다. 계정에 따라 월 업로드 한도가 있을 수 있다.
 2. 각 오디오의 ID(`rbxassetid://숫자`)를 `src/shared/Config/Audio.luau`의 같은 이름 키에 넣는다. 파일 이름 = 키 이름.
    - 직접 넣기 어려우면 "이름: 숫자" 목록만 오케스트레이터에게 주면 된다.
 
@@ -17,5 +17,6 @@
 | RedDeath | 레드 처치 |
 | Alert / WhiteAttack | 몬스터 "!" 발견 / 화이트 공격 |
 | PlayerHurt / Downed / Revived | 피격 / 쓰러짐 / 부활 |
-| Pickup | 무기 줍기 |
+| Pickup | 무기·상자 줍기 |
+| DoorOpen | 시작 방 문 열림 |
 | Countdown / StageClear / StageFail / Stamp | 카운트다운 / 성공 / 실패 / 도장 |

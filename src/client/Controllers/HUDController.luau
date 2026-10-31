@@ -339,6 +339,8 @@ local function onState(newState: Types.MatchState)
 		hideBoardLater(4)
 	end
 	if phase == "Playing" and prev.Phase ~= "Playing" then
+		local door = workspace:FindFirstChild("Stage") and (workspace :: any).Stage:FindFirstChild("StartDoor", true)
+		ctx.PlaySound("DoorOpen", if door and door:IsA("BasePart") then door.Position else nil) -- orchestrator
 		startLabel.Text = "시작!"
 		startLabel.Visible = true
 		task.delay(0.9, function()
