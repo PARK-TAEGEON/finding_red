@@ -3,6 +3,7 @@
 -- plus a tiny state-changed signal published by HUDController. Owner: C.
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
+local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
@@ -17,6 +18,7 @@ local player = Players.LocalPlayer
 local sprinting = false
 local reviveTarget: Player? = nil
 local listeners: { (Types.MatchState) -> () } = {}
+local DOOR_MAX_RISE = 8 -- matches StageFlow
 
 function Actions.init(c: Types.ClientContext)
 	ctx = c
@@ -185,6 +187,88 @@ function Actions.stopRevive()
 		reviveTarget = nil
 		send("ReviveStop", target)
 	end
+end
+
+-- Start room + door (CONTRACT §1.12.3) ------------------------------------------------
+-- Countdown with EndsAt == nil is loading; with EndsAt set the party is in the start room.
+function Actions.isLoading(): boolean
+	local state = Actions.state()
+	return state ~= nil and state.Phase == "Countdown" and state.EndsAt == nil
+end
+
+function Actions.inStartRoom(): boolean
+	local state = Actions.state()
+	return state ~= nil
+		and state.Phase == "Countdown"
+		and state.EndsAt ~= nil
+		and Actions.inParty(player.UserId)
+		and Actions.myLife() == "Alive"
+end
+
+-- The StartDoor marker of the current stage (tagged part under workspace.Stage), if any.
+local cachedDoor: BasePart? = nil
+local nextDoorScan = 0
+function Actions.doorPart(): BasePart?
+	local stage = workspace:FindFirstChild("Stage")
+	if not stage then
+		cachedDoor = nil
+		return nil
+	end
+	local door = cachedDoor
+	if door and door:IsDescendantOf(stage) then
+		return door
+	end
+	cachedDoor = nil
+	if os.clock() < nextDoorScan then
+		return nil
+	end
+	nextDoorScan = os.clock() + 0.5
+	for _, inst in ipairs(CollectionService:GetTagged("StartDoor")) do
+		if inst:IsA("BasePart") and inst:IsDescendantOf(stage) then
+			cachedDoor = inst
+			return inst
+		end
+	end
+	return nil
+end
+
+-- Flat distance to the door (same rule as the server). nil = this stage has no door marker.
+function Actions.doorDistance(): number?
+	local door = Actions.doorPart()
+	if not door then
+		return nil
+	end
+	local mine = Actions.root()
+	if not mine then
+		return math.huge
+	end
+	local a, b = mine.Position, door.Position
+	if math.abs(a.Y - b.Y) > DOOR_MAX_RISE then
+		return math.huge
+	end
+	return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
+end
+
+-- In the start room and close enough to the door (anywhere when the stage has no door marker;
+-- the server allows that case too).
+function Actions.canOpenDoor(): boolean
+	if not Actions.inStartRoom() then
+		return false
+	end
+	local d = Actions.doorDistance()
+	return d == nil or d <= GameConfig.DoorInteractRange
+end
+
+local lastDoorSend = 0
+function Actions.openDoor(): boolean
+	local c = ctx
+	local state = Actions.state()
+	if not c or not state or not Actions.canOpenDoor() or os.clock() - lastDoorSend < 0.3 then
+		return false
+	end
+	lastDoorSend = os.clock()
+	Net.event(c.Remotes, "Interact"):FireServer({ R = state.RoundId, Kind = "OpenDoor" })
+	return true
 end
 
 -- Called every frame by the HUD: drop a hold whose target got up / left / moved away.

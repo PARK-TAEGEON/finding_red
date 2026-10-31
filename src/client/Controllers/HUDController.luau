@@ -1,8 +1,9 @@
 --!strict
 -- In-match HUD (CONTRACT §1.5, §1.6, §3.5). Owner: C.
 -- Receives `State` -> ctx.SetState, drives camera/weapon mode by phase + own Life, and draws:
--- gold + target counter, radar, HP + team keys, weapon/ammo, hurt vignette, toasts, downed
--- overlay, revive prompt (hold E), countdown, chalkboard mission banner, result screen, pause menu.
+-- gold + target counter, radar, HP + team keys, weapon/ammo, full-screen hurt flash, toasts, downed
+-- overlay, revive prompt (hold E), loading overlay, start-room door banner + hand button,
+-- chalkboard mission banner, result screen, pause menu.
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
@@ -22,6 +23,7 @@ local Actions = require(UI:WaitForChild("Actions"))
 local Radar = require(UI:WaitForChild("Radar"))
 local ResultScreen = require(UI:WaitForChild("ResultScreen"))
 local PauseMenu = require(UI:WaitForChild("PauseMenu"))
+local Loading = require(UI:WaitForChild("Loading"))
 
 local HUDController = {}
 
@@ -43,7 +45,8 @@ local keyRow: Frame
 local weaponFrame: Frame
 local weaponName: TextLabel
 local weaponAmmo: TextLabel
-local vignette: CanvasGroup
+local hurtFlash: Frame
+local hurtTween: Tween? = nil
 local toastList: Frame
 local downedOverlay: Frame
 local downedTitle: TextLabel
@@ -54,7 +57,13 @@ local spectateBanner: TextLabel
 local revivePrompt: Frame
 local reviveText: TextLabel
 local reviveBar: Frame
-local countdownLabel: TextLabel
+local startLabel: TextLabel
+local doorBanner: TextLabel
+local doorPrompt: Frame
+local doorButton: TextButton
+local doorButtonScale: UIScale
+local doorHint: TextLabel
+local loading: Loading.Loading
 local board: Frame
 local boardLines: { TextLabel } = {}
 local boardScale: UIScale
@@ -63,8 +72,8 @@ local pauseMenu: PauseMenu.PauseMenu
 
 -- client state
 local lastFirstPerson: boolean? = nil
+local lastWeaponOn: boolean? = nil
 local lastLife = "Alive"
-local lastCountdownNumber = -1
 local flagsSnapshot: { [string]: number }? = nil
 local myVote: string? = nil
 local boardHideToken = 0
@@ -83,18 +92,24 @@ local function stagePhase(phase: string): boolean
 end
 
 -- Camera / weapon mode ------------------------------------------------------------
+-- First person while playing and in the start room (walk to the door like the original);
+-- weapons only while playing (the server ignores shots before the door opens).
 local function refreshMode()
-	local firstPerson = Actions.canAct() and not (pauseMenu and pauseMenu.IsOpen())
-	if firstPerson == lastFirstPerson then
-		return
+	local paused = pauseMenu ~= nil and pauseMenu.IsOpen()
+	local weaponOn = Actions.canAct() and not paused
+	local firstPerson = (Actions.canAct() or Actions.inStartRoom()) and not paused
+	if firstPerson ~= lastFirstPerson then
+		lastFirstPerson = firstPerson
+		pcall(function()
+			ctx.Controllers.Camera:SetFirstPerson(firstPerson)
+		end)
 	end
-	lastFirstPerson = firstPerson
-	pcall(function()
-		ctx.Controllers.Camera:SetFirstPerson(firstPerson)
-	end)
-	pcall(function()
-		ctx.Controllers.Weapon:SetEnabled(firstPerson)
-	end)
+	if weaponOn ~= lastWeaponOn then
+		lastWeaponOn = weaponOn
+		pcall(function()
+			ctx.Controllers.Weapon:SetEnabled(weaponOn)
+		end)
+	end
 end
 
 -- Toasts --------------------------------------------------------------------------
@@ -138,13 +153,19 @@ local function toast(text: string)
 	end)
 end
 
--- Hurt vignette --------------------------------------------------------------------
+-- Hurt flash (§1.12.7): the whole screen goes translucent red and fades in ~0.3 s ----------
 local function hurt(amount: number)
-	local intensity = math.clamp(amount / 30, 0.35, 0.85)
-	vignette.GroupTransparency = 1 - intensity
-	TweenService:Create(vignette, TweenInfo.new(0.55, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-		GroupTransparency = 1,
-	}):Play()
+	local intensity = math.clamp(amount / 40, 0.3, 0.55)
+	if hurtTween then
+		hurtTween:Cancel()
+	end
+	hurtFlash.BackgroundTransparency = 1 - intensity
+	hurtFlash.Visible = true
+	local tween = TweenService:Create(hurtFlash, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+		BackgroundTransparency = 1,
+	})
+	hurtTween = tween
+	tween:Play()
 	ctx.PlaySound("PlayerHurt")
 end
 
@@ -295,26 +316,37 @@ local function onState(newState: Types.MatchState)
 	if phase ~= prev.Phase or newRound then
 		myVote = nil
 	end
+	local member = table.find(newState.Party, player.UserId) ~= nil
+
+	-- Loading overlay (§1.12.4): Countdown with EndsAt == nil = the server is building/teleporting.
+	if phase == "Countdown" and newState.EndsAt == nil and member then
+		loading.Show(GameConfig.LoadingSeconds)
+	elseif loading.IsShown() then
+		loading.Finish()
+	end
 	if phase == "Countdown" and (prev.Phase ~= "Countdown" or newRound) then
 		flagsSnapshot = Actions.stageFlags()
-		lastCountdownNumber = -1
-		if table.find(newState.Party, player.UserId) then
-			showBoard(newState)
-		end
-	elseif phase == "Countdown" and newState.Target ~= prev.Target and board.Visible then
+	end
+
+	-- Start room (§1.12.3): Countdown with EndsAt = auto-open time.
+	local startRoom = phase == "Countdown" and newState.EndsAt ~= nil
+	local wasStartRoom = prev.Phase == "Countdown" and prev.EndsAt ~= nil and not newRound
+	if startRoom and not wasStartRoom and member then
 		showBoard(newState)
+		hideBoardLater(6)
+	elseif startRoom and newState.Target ~= prev.Target and board.Visible then
+		showBoard(newState)
+		hideBoardLater(4)
 	end
 	if phase == "Playing" and prev.Phase ~= "Playing" then
-		countdownLabel.Text = "시작!"
-		countdownLabel.Visible = true
+		startLabel.Text = "시작!"
+		startLabel.Visible = true
 		task.delay(0.9, function()
-			if state().Phase == "Playing" then
-				countdownLabel.Visible = false
-			end
+			startLabel.Visible = false
 		end)
-		hideBoardLater(3)
+		board.Visible = false
 	end
-	if phase ~= "Countdown" and phase ~= "Playing" then
+	if phase ~= "Countdown" then
 		board.Visible = false
 	end
 	if phase == "Playing" and not newRound and newState.PenaltyKills > prev.PenaltyKills then
@@ -355,17 +387,24 @@ local function onFrame(dt: number)
 		radar.Update(s)
 	end
 
-	-- countdown numbers
-	if s.Phase == "Countdown" and s.EndsAt then
-		local n = math.max(1, math.ceil(s.EndsAt - t))
-		countdownLabel.Visible = true
-		if n ~= lastCountdownNumber then
-			lastCountdownNumber = n
-			countdownLabel.Text = tostring(n)
-			ctx.PlaySound("Countdown")
+	-- start room: door banner with the auto-open countdown + hand button near the door
+	local inRoom = s.Phase == "Countdown" and s.EndsAt ~= nil and table.find(s.Party, player.UserId) ~= nil
+	doorBanner.Visible = inRoom
+	if inRoom and s.EndsAt then
+		doorBanner.Text = string.format("문을 열고 들어가세요! (%d)", math.max(0, math.ceil(s.EndsAt - t)))
+	end
+	local canOpen = Actions.canOpenDoor()
+	if canOpen ~= doorPrompt.Visible then
+		doorPrompt.Visible = canOpen
+		if canOpen then
+			doorButtonScale.Scale = 0.6
+			TweenService:Create(doorButtonScale, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+				Scale = 1,
+			}):Play()
 		end
-	elseif s.Phase ~= "Playing" then
-		countdownLabel.Visible = false
+	end
+	if canOpen then
+		doorButton.Rotation = math.sin(os.clock() * 6) * 8 -- a little wave
 	end
 
 	-- stage timer (elapsed / par)
@@ -436,30 +475,16 @@ local function build()
 	gui = Kit.gui("FindingRedHUD", 5, playerGui)
 	local touch = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
-	-- vignette (bottom-most)
-	vignette = Instance.new("CanvasGroup")
-	vignette.Name = "Hurt"
-	vignette.Size = UDim2.fromScale(1, 1)
-	vignette.BackgroundTransparency = 1
-	vignette.GroupTransparency = 1
-	vignette.ZIndex = 1
-	vignette.Parent = gui
-	local edges = {
-		{ Size = UDim2.fromScale(0.22, 1), Pos = UDim2.fromScale(0, 0), Rot = 0 },
-		{ Size = UDim2.fromScale(0.22, 1), Pos = UDim2.fromScale(0.78, 0), Rot = 180 },
-		{ Size = UDim2.fromScale(1, 0.25), Pos = UDim2.fromScale(0, 0), Rot = 90 },
-		{ Size = UDim2.fromScale(1, 0.25), Pos = UDim2.fromScale(0, 0.75), Rot = 270 },
-	}
-	for _, e in ipairs(edges) do
-		local f = Kit.frame(vignette, { Size = e.Size, Position = e.Pos, BackgroundColor3 = C.Red })
-		local g = Instance.new("UIGradient")
-		g.Rotation = e.Rot
-		g.Transparency = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0.05),
-			NumberSequenceKeypoint.new(1, 1),
-		})
-		g.Parent = f
-	end
+	-- full-screen hurt flash (bottom-most, never blocks input)
+	hurtFlash = Kit.frame(gui, {
+		Name = "Hurt",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Color3.fromRGB(230, 20, 20),
+		BackgroundTransparency = 1,
+		Active = false,
+		ZIndex = 1,
+	})
+	loading = Loading.new(playerGui)
 
 	-- top center: gold + counter
 	local top = Kit.frame(gui, {
@@ -594,7 +619,7 @@ local function build()
 	toastList = Kit.frame(gui, {
 		Name = "Toasts",
 		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, 96),
+		Position = UDim2.new(0.5, 0, 0, 126),
 		Size = UDim2.fromOffset(480, 170),
 		BackgroundTransparency = 1,
 		ZIndex = 30,
@@ -684,24 +709,79 @@ local function build()
 	reviveBar = Kit.frame(reviveTrack, { Size = UDim2.fromScale(0, 1), BackgroundColor3 = C.Green, ZIndex = 14 })
 	Kit.round(reviveBar)
 
-	-- countdown number
-	countdownLabel = Kit.label(gui, "", {
-		Name = "Countdown",
+	-- "시작!" when the door opens
+	startLabel = Kit.label(gui, "", {
+		Name = "Start",
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0.5, 0.62),
-		Size = UDim2.fromOffset(260, 130),
+		Size = UDim2.fromOffset(260, 110),
 		Font = Kit.Title,
 		TextColor3 = C.Gold,
 		Visible = false,
 		ZIndex = 15,
 	})
-	Kit.textStroke(countdownLabel, C.Ink, 5)
+	Kit.textStroke(startLabel, C.Ink, 5)
+
+	-- start room: small top banner + big hand button (tap / click / E)
+	doorBanner = Kit.label(gui, "", {
+		Name = "DoorBanner",
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, 84),
+		Size = UDim2.fromOffset(330, 34),
+		BackgroundTransparency = 0.15,
+		BackgroundColor3 = C.Panel,
+		Font = Kit.Title,
+		TextColor3 = C.White,
+		Visible = false,
+		ZIndex = 16,
+	})
+	Kit.round(doorBanner)
+	Kit.padding(doorBanner, 5)
+	Kit.stroke(doorBanner, C.Gold, 2)
+	doorPrompt = Kit.frame(gui, {
+		Name = "DoorPrompt",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.66),
+		Size = UDim2.fromOffset(150, 170),
+		BackgroundTransparency = 1,
+		Visible = false,
+		ZIndex = 16,
+	})
+	doorButton = Kit.button(doorPrompt, "✋", {
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.fromScale(0.5, 0),
+		Size = UDim2.fromOffset(120, 120),
+		BackgroundColor3 = C.White,
+		BackgroundTransparency = 0.05,
+		TextColor3 = C.Ink,
+		Font = Enum.Font.GothamBold,
+		ZIndex = 17,
+	})
+	Kit.round(doorButton)
+	Kit.stroke(doorButton, C.Gold, 5)
+	Kit.padding(doorButton, 18)
+	doorButtonScale = Instance.new("UIScale")
+	doorButtonScale.Parent = doorButton
+	doorHint = Kit.label(doorPrompt, if touch then "눌러서 문 열기" else "E: 문 열기", {
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, 128),
+		Size = UDim2.fromOffset(170, 34),
+		BackgroundTransparency = 0.15,
+		BackgroundColor3 = C.Panel,
+		Font = Kit.Title,
+		ZIndex = 17,
+	})
+	Kit.round(doorHint)
+	Kit.padding(doorHint, 5)
+	doorButton.Activated:Connect(function()
+		Actions.openDoor()
+	end)
 
 	-- chalkboard mission banner
 	board = Kit.frame(gui, {
 		Name = "Board",
 		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, 120),
+		Position = UDim2.new(0.5, 0, 0, 130),
 		Size = UDim2.fromOffset(520, 176),
 		BackgroundColor3 = C.Board,
 		Visible = false,
@@ -836,7 +916,14 @@ function HUDController.Start(self: Types.HUDController)
 				Actions.toggleSprint()
 			end
 		elseif input.KeyCode == Enum.KeyCode.E then
-			Actions.startRevive()
+			if not Actions.openDoor() then
+				Actions.startRevive()
+			end
+		elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
+			-- first person locks the mouse, so a click anywhere near the door also opens it
+			if Actions.canOpenDoor() then
+				Actions.openDoor()
+			end
 		end
 	end)
 	UserInputService.InputEnded:Connect(function(input)

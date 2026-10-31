@@ -1,7 +1,8 @@
 --!strict
--- Lobby + stage vote UI (CONTRACT §1.1). Owner: C.
--- Lobby: party list with ✔ marks, Ready toggle, friend invite. Vote: stage cards with Korean
--- names, own stamp counts (StageFlags) and live vote counts.
+-- Lobby + stage vote UI (CONTRACT §1.1, §1.12.5). Owner: C.
+-- Lobby: party list with ✔ marks, Ready toggle, friend invite. Vote: level-select grid
+-- ("LEVEL 1" + numbered tiles from Config.Stages.Order grouped by Level), 3 stamp circles per tile
+-- from my StageFlags, locked tiles grey with a lock, votes as small dots, my vote highlighted.
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local SocialService = game:GetService("SocialService")
@@ -28,10 +29,10 @@ local partyRow: Frame
 local statusLabel: TextLabel
 local readyButton: TextButton
 local votePanel: Frame
-local voteTitle: TextLabel
 local voteTimer: TextLabel
-local cardRow: Frame
+local levelList: Frame
 local voteNote: TextLabel
+local voteScaleBox: UIScale
 
 local myVote: string? = nil
 local lastPhase = ""
@@ -88,66 +89,217 @@ local function renderStatus(s: Types.MatchState)
 	end
 end
 
-local function stampText(flags: number): string
-	local out = ""
-	for _, bit in ipairs({ 1, 2, 4 }) do
-		out ..= if bit32.band(flags, bit) ~= 0 then "★" else "☆"
+local TILE_W, TILE_H, TILE_GAP, PER_ROW = 112, 132, 12, 5
+
+-- Scale the vote panel (offset-sized, grows with the grid) to fit the screen.
+local function fitVote()
+	local camera = workspace.CurrentCamera
+	if camera and votePanel and voteScaleBox then
+		local vp = camera.ViewportSize
+		local w, h = votePanel.Size.X.Offset, votePanel.Size.Y.Offset
+		voteScaleBox.Scale = math.clamp(math.min(vp.X / (w + 40), vp.Y / (h + 90)), 0.45, 1.2)
+	end
+end
+local LOCKED = Color3.fromRGB(78, 82, 92)
+local LOCKED_DARK = Color3.fromRGB(56, 59, 68)
+local DOT_COLORS = { C.Green, C.Blue, Color3.fromRGB(255, 150, 40), Color3.fromRGB(170, 90, 230) }
+
+-- Stage ids of Config.Stages.Order grouped by Level, levels ascending.
+local function levels(): { { Level: number, Stages: { string } } }
+	local byLevel: { [number]: { string } } = {}
+	local order: { number } = {}
+	for _, id in ipairs(StagesConfig.Order) do
+		local cfg = StagesConfig[id]
+		local level = if type(cfg) == "table" and type(cfg.Level) == "number" then cfg.Level else 1
+		if not byLevel[level] then
+			byLevel[level] = {}
+			table.insert(order, level)
+		end
+		table.insert(byLevel[level], id)
+	end
+	table.sort(order)
+	local out = {}
+	for _, level in ipairs(order) do
+		table.insert(out, { Level = level, Stages = byLevel[level] })
 	end
 	return out
 end
 
+-- "1-3" -> "3"
+local function tileNumber(stageId: string): string
+	return string.match(stageId, "%-(%d+)$") or stageId
+end
+
+local function lockIcon(parent: Instance)
+	local holder = Kit.frame(parent, {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.36),
+		Size = UDim2.fromOffset(36, 42),
+		BackgroundTransparency = 1,
+		ZIndex = 4,
+	})
+	local shackle = Kit.frame(holder, {
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.fromScale(0.5, 0),
+		Size = UDim2.fromOffset(24, 26),
+		BackgroundTransparency = 1,
+		ZIndex = 4,
+	})
+	Kit.corner(shackle, UDim.new(0.5, 0))
+	Kit.stroke(shackle, C.Gray, 5)
+	local body = Kit.frame(holder, {
+		Position = UDim2.fromOffset(0, 16),
+		Size = UDim2.fromOffset(36, 26),
+		BackgroundColor3 = C.Gray,
+		ZIndex = 5,
+	})
+	Kit.corner(body, UDim.new(0, 5))
+	local hole = Kit.frame(body, {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.45),
+		Size = UDim2.fromOffset(7, 9),
+		BackgroundColor3 = LOCKED_DARK,
+		ZIndex = 6,
+	})
+	Kit.round(hole)
+end
+
+local function stampCircles(parent: Instance, flags: number, locked: boolean)
+	local row = Kit.frame(parent, {
+		AnchorPoint = Vector2.new(0.5, 1),
+		Position = UDim2.new(0.5, 0, 1, -10),
+		Size = UDim2.new(1, -16, 0, 22),
+		BackgroundTransparency = 1,
+		ZIndex = 4,
+	})
+	Kit.list(row, true, 7)
+	for i, bit in ipairs({ 1, 2, 4 }) do
+		local on = bit32.band(flags, bit) ~= 0
+		local circle = Kit.frame(row, {
+			Size = UDim2.fromOffset(22, 22),
+			BackgroundColor3 = if on then C.Red else LOCKED_DARK,
+			BackgroundTransparency = if on then 0 else 0.3,
+			LayoutOrder = i,
+			ZIndex = 4,
+		})
+		Kit.round(circle)
+		Kit.stroke(circle, if on then C.RedDark elseif locked then C.Gray else C.Chalk, 2)
+	end
+end
+
+local function voteDots(parent: Instance, count: number, mine: boolean)
+	if count <= 0 then
+		return
+	end
+	local row = Kit.frame(parent, {
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -6, 0, 6),
+		Size = UDim2.fromOffset(60, 14),
+		BackgroundTransparency = 1,
+		ZIndex = 6,
+	})
+	Kit.list(row, true, 3, Enum.HorizontalAlignment.Right)
+	for i = 1, math.min(count, 4) do
+		-- my vote is the gold dot; teammates' votes take the other colours
+		local color = if mine and i == 1 then C.Gold else DOT_COLORS[((i - 1) % #DOT_COLORS) + 1]
+		local dot = Kit.frame(row, {
+			Size = UDim2.fromOffset(13, 13),
+			BackgroundColor3 = color,
+			LayoutOrder = i,
+			ZIndex = 6,
+		})
+		Kit.round(dot)
+		Kit.stroke(dot, C.Ink, 2)
+	end
+end
+
 local function renderVote(s: Types.MatchState)
-	Kit.clear(cardRow, { "UIListLayout" })
+	Kit.clear(levelList, { "UIListLayout" })
 	local options = s.Options or {}
 	local ballot = s.Ballot or {}
 	local member = table.find(s.Party, player.UserId) ~= nil
 	local flags = Actions.stageFlags()
-	for i, stageId in ipairs(options) do
-		local cfg = StagesConfig[stageId]
-		local card = Kit.button(cardRow, "", {
-			Size = UDim2.fromOffset(160, 190),
-			BackgroundColor3 = if myVote == stageId then C.GreenDark else C.PanelLight,
-			AutoButtonColor = member,
-			LayoutOrder = i,
+	local height = 0
+	for li, group in ipairs(levels()) do
+		local rows = math.max(1, math.ceil(#group.Stages / PER_ROW))
+		local sectionH = 46 + rows * TILE_H + (rows - 1) * TILE_GAP
+		height += sectionH + (if li > 1 then 10 else 0)
+		local section = Kit.frame(levelList, {
+			Size = UDim2.new(1, 0, 0, sectionH),
+			BackgroundTransparency = 1,
+			LayoutOrder = li,
 		})
-		Kit.corner(card, UDim.new(0, 16))
-		Kit.stroke(card, if myVote == stageId then C.Gold else C.Ink, 3)
-		local level = Kit.label(card, "LEVEL " .. stageId, {
-			Position = UDim2.fromOffset(10, 10),
-			Size = UDim2.new(1, -20, 0, 34),
+		local header = Kit.label(section, "LEVEL " .. tostring(group.Level), {
+			Position = UDim2.fromOffset(4, 0),
+			Size = UDim2.new(1, -130, 0, 40),
 			Font = Kit.Title,
 			TextColor3 = C.Gold,
+			TextXAlignment = Enum.TextXAlignment.Left,
 		})
-		Kit.textStroke(level, C.Ink, 2)
-		Kit.label(card, if type(cfg) == "table" then tostring(cfg.Name) else stageId, {
-			Position = UDim2.fromOffset(10, 50),
-			Size = UDim2.new(1, -20, 0, 30),
+		Kit.textStroke(header, C.Ink, 2)
+		local grid = Kit.frame(section, {
+			Position = UDim2.fromOffset(0, 46),
+			Size = UDim2.new(1, 0, 1, -46),
+			BackgroundTransparency = 1,
 		})
-		Kit.label(card, stampText(flags[stageId] or 0), {
-			Position = UDim2.fromOffset(10, 88),
-			Size = UDim2.new(1, -20, 0, 34),
-			TextColor3 = C.Red,
-			Font = Kit.Title,
-		})
-		local count = Kit.label(card, string.format("%d표", ballot[stageId] or 0), {
-			AnchorPoint = Vector2.new(0.5, 1),
-			Position = UDim2.new(0.5, 0, 1, -10),
-			Size = UDim2.fromOffset(90, 36),
-			BackgroundTransparency = 0,
-			BackgroundColor3 = C.Panel,
-			Font = Kit.Title,
-		})
-		Kit.round(count)
-		Kit.padding(count, 5)
-		card.Activated:Connect(function()
-			if not member then
-				return
+		local layout = Instance.new("UIGridLayout")
+		layout.CellSize = UDim2.fromOffset(TILE_W, TILE_H)
+		layout.CellPadding = UDim2.fromOffset(TILE_GAP, TILE_GAP)
+		layout.SortOrder = Enum.SortOrder.LayoutOrder
+		layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+		layout.Parent = grid
+
+		for i, stageId in ipairs(group.Stages) do
+			local cfg = StagesConfig[stageId]
+			local unlocked = table.find(options, stageId) ~= nil
+			local chosen = myVote == stageId
+			local tile = Kit.button(grid, "", {
+				BackgroundColor3 = if not unlocked then LOCKED elseif chosen then C.GreenDark else C.PanelLight,
+				AutoButtonColor = member and unlocked,
+				LayoutOrder = i,
+				ZIndex = 3,
+			})
+			Kit.corner(tile, UDim.new(0, 14))
+			Kit.stroke(tile, if chosen then C.Gold elseif unlocked then C.Chalk else LOCKED_DARK, if chosen then 5 else 3)
+			if unlocked then
+				local number = Kit.label(tile, tileNumber(stageId), {
+					AnchorPoint = Vector2.new(0.5, 0),
+					Position = UDim2.new(0.5, 0, 0, 10),
+					Size = UDim2.new(1, -20, 0, 54),
+					Font = Kit.Title,
+					TextColor3 = C.White,
+					ZIndex = 4,
+				})
+				Kit.textStroke(number, C.Ink, 3)
+			else
+				lockIcon(tile)
 			end
-			myVote = stageId
-			Net.event(ctx.Remotes, "Vote"):FireServer(stageId)
-			renderVote(ctx.State())
-		end)
+			Kit.label(tile, if type(cfg) == "table" then tostring(cfg.Name) else stageId, {
+				AnchorPoint = Vector2.new(0.5, 0),
+				Position = UDim2.new(0.5, 0, 0, 68),
+				Size = UDim2.new(1, -12, 0, 20),
+				TextColor3 = if unlocked then C.Chalk else C.Gray,
+				ZIndex = 4,
+			})
+			stampCircles(tile, flags[stageId] or 0, not unlocked)
+			voteDots(tile, if unlocked then ballot[stageId] or 0 else 0, chosen)
+			tile.Activated:Connect(function()
+				if not member then
+					return
+				end
+				if not unlocked then
+					toast("아직 잠긴 스테이지예요")
+					return
+				end
+				myVote = stageId
+				Net.event(ctx.Remotes, "Vote"):FireServer(stageId)
+				renderVote(ctx.State())
+			end)
+		end
 	end
+	levelList.Size = UDim2.new(1, -32, 0, height)
+	votePanel.Size = UDim2.fromOffset(PER_ROW * TILE_W + (PER_ROW - 1) * TILE_GAP + 32, 16 + height + 50)
+	fitVote()
 	voteNote.Text = if member
 		then "가고 싶은 스테이지를 누르세요 · 동점이면 앞 번호"
 		else "관전 중 · 다음 판부터 함께해요"
@@ -242,39 +394,35 @@ local function build()
 	votePanel = Kit.frame(gui, {
 		Name = "VotePanel",
 		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.fromScale(0.5, 0.52),
-		Size = UDim2.fromOffset(600, 330),
-		BackgroundTransparency = 0.1,
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(640, 260),
+		BackgroundTransparency = 0.08,
 		Visible = false,
 	})
 	Kit.corner(votePanel, UDim.new(0, 22))
 	Kit.stroke(votePanel, C.White, 3)
-	local voteScale = Instance.new("UIScale")
-	voteScale.Parent = votePanel
-	voteTitle = Kit.label(votePanel, "스테이지 고르기", {
-		Position = UDim2.fromOffset(20, 12),
-		Size = UDim2.new(1, -140, 0, 40),
-		Font = Kit.Title,
-		TextXAlignment = Enum.TextXAlignment.Left,
-	})
-	Kit.textStroke(voteTitle, C.Ink, 2)
+	voteScaleBox = Instance.new("UIScale")
+	voteScaleBox.Parent = votePanel
 	voteTimer = Kit.label(votePanel, "", {
 		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.new(1, -20, 0, 12),
-		Size = UDim2.fromOffset(110, 40),
+		Position = UDim2.new(1, -20, 0, 16),
+		Size = UDim2.fromOffset(110, 38),
 		Font = Kit.Title,
 		TextColor3 = C.Gold,
 		TextXAlignment = Enum.TextXAlignment.Right,
+		ZIndex = 2,
 	})
-	cardRow = Kit.frame(votePanel, {
-		Position = UDim2.fromOffset(16, 64),
+	Kit.textStroke(voteTimer, C.Ink, 2)
+	levelList = Kit.frame(votePanel, {
+		Position = UDim2.fromOffset(16, 16),
 		Size = UDim2.new(1, -32, 0, 200),
 		BackgroundTransparency = 1,
 	})
-	Kit.list(cardRow, true, 14)
+	Kit.list(levelList, false, 10, Enum.HorizontalAlignment.Left).VerticalAlignment = Enum.VerticalAlignment.Top
 	voteNote = Kit.label(votePanel, "", {
-		Position = UDim2.fromOffset(20, 280),
-		Size = UDim2.new(1, -40, 0, 26),
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.new(0, 20, 1, -14),
+		Size = UDim2.new(1, -40, 0, 24),
 		TextColor3 = C.Chalk,
 	})
 
@@ -295,8 +443,8 @@ local function build()
 		if camera then
 			local vp = camera.ViewportSize
 			scale.Scale = math.clamp(math.min(vp.X / 600, vp.Y / 420), 0.55, 1)
-			voteScale.Scale = math.clamp(math.min(vp.X / 640, vp.Y / 400), 0.5, 1)
 		end
+		fitVote()
 	end
 	fit()
 	local camera = workspace.CurrentCamera

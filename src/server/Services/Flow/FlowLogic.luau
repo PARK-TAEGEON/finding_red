@@ -306,7 +306,7 @@ function FlowLogic.placement(phase: Phase, inParty: boolean, life: LifeState, st
 		return "Lobby"
 	end
 	if phase == "Countdown" then
-		return "Stage"
+		return "Stage" -- start room (stageLoaded is false while loading, see above)
 	end
 	if (phase == "Playing" or phase == "Result") and (life == "Alive" or life == "Downed") then
 		return "Stage"
@@ -320,6 +320,82 @@ function FlowLogic.spawnSlot(index: number, count: number): number
 		return 0
 	end
 	return ((math.max(1, index) - 1) % count) + 1
+end
+
+-- Start room + door (CONTRACT §1.12.3) ----------------------------------------------
+-- Loading (§1.12.4) is the first part of `Countdown`: EndsAt == nil until the party stands in
+-- the start room. Then EndsAt = auto-open time, and the door opens on interact or at EndsAt.
+
+-- Seconds still to wait so the loading overlay stays up at least `seconds` from `startedAt`.
+function FlowLogic.loadingRemaining(startedAt: number, now: number, seconds: number): number
+	if not finite(startedAt) or not finite(now) or not finite(seconds) then
+		return 0
+	end
+	return math.max(0, startedAt + seconds - now)
+end
+
+-- Auto-open deadline for a start room that became ready at `readyAt`.
+function FlowLogic.startRoomEndsAt(readyAt: number, seconds: number): number
+	return readyAt + math.max(0, seconds)
+end
+
+-- How the start room ends: "Door" (someone opened it), "Auto" (deadline reached), or nil (keep waiting).
+function FlowLogic.startRoomOutcome(now: number, endsAt: number, doorOpened: boolean): ("Door" | "Auto")?
+	if doorOpened then
+		return "Door"
+	end
+	if now >= endsAt then
+		return "Auto"
+	end
+	return nil
+end
+
+-- Distance from a player's root to the door marker, measured flat (XZ) because the marker sits at
+-- the door's middle height. nil = the stage has no door position (then interaction is allowed).
+-- A root more than `maxRise` above/below the door is never "near" it.
+function FlowLogic.doorDistance(rootPos: { number }, doorPos: { number }?, maxRise: number): number?
+	if doorPos == nil then
+		return nil
+	end
+	local rx, ry, rz = rootPos[1], rootPos[2], rootPos[3]
+	local dx, dy, dz = doorPos[1], doorPos[2], doorPos[3]
+	if not (finite(rx) and finite(ry) and finite(rz) and finite(dx) and finite(dy) and finite(dz)) then
+		return math.huge
+	end
+	if math.abs(ry - dy) > maxRise then
+		return math.huge
+	end
+	return math.sqrt((rx - dx) ^ 2 + (rz - dz) ^ 2)
+end
+
+export type DoorRequest = {
+	Phase: Phase,
+	RoundMatches: boolean, -- payload.R == current RoundId
+	StartRoomOpen: boolean, -- loading finished and the door is still closed
+	InParty: boolean,
+	Life: LifeState,
+	Distance: number?, -- nil = door position unknown (allowed)
+	Range: number,
+}
+
+-- Server validation for `Interact {Kind = "OpenDoor"}`.
+function FlowLogic.canOpenDoor(req: DoorRequest): boolean
+	if req.Phase ~= "Countdown" or not req.RoundMatches or not req.StartRoomOpen then
+		return false
+	end
+	if not req.InParty or req.Life ~= "Alive" then
+		return false
+	end
+	local distance = req.Distance
+	if distance == nil then
+		return true
+	end
+	return finite(distance) and distance <= req.Range
+end
+
+-- The stage clock starts when the door opens: returns StartedAt and the fail deadline (EndsAt).
+function FlowLogic.playWindow(openedAt: number, timeLimit: number): (number, number)
+	return openedAt, openedAt + math.max(0, timeLimit)
 end
 
 return FlowLogic
