@@ -15,6 +15,10 @@ local Red = Enemies.Red
 local White = Enemies.White
 local V = L.vec
 
+-- Red with the legacy flee brain (Behavior = "Flee"), kept for later variants.
+local RedFlee = table.clone(Red)
+RedFlee.Behavior = "Flee"
+
 -- deterministic RNG
 local seed = 12345
 local function rand(): number
@@ -33,9 +37,15 @@ local function sense(now: number, pos, players, extra: { [string]: any }?)
 end
 
 -- Config schema (CONTRACT §3.6 / §1.8) -----------------------------------------------
-check(Red.HP == 30 and Red.Speed == 8 and Red.RunSpeed == 13 and Red.Sight == 40 and Red.Penalty == false, "red cfg")
-check(Red.Flee ~= nil and Red.Flee.Run == 4 and Red.Flee.Rest == 2 and Red.Flee.RestSpeed == 6, "red flee cfg")
+check(Red.HP == 30 and Red.Speed == 8 and Red.RunSpeed == 14 and Red.Sight == 35 and Red.Penalty == false, "red cfg (v0.5)")
+check(Red.Behavior == "Chase" and Red.Leash == 40, "red chases by default, leash 40")
+check(Red.Melee ~= nil and Red.Melee.Damage == 8 and Red.Melee.Interval == 1.2 and Red.Melee.Range == 4, "red melee")
+check(Red.RunSpeed < 16, "red chase slower than player walk")
+check(Red.Flee ~= nil and Red.Flee.Run == 4 and Red.Flee.Rest == 2 and Red.Flee.RestSpeed == 6, "red flee cfg kept")
 check(White.HP == 60 and White.RunSpeed == 18 and White.Sight == 25 and White.Leash == 50 and White.Penalty, "white cfg")
+check(L.behaviourOf(Red) == "Chase" and L.behaviourOf(RedFlee) == "Flee" and L.behaviourOf(White) == "Chase", "behaviour field")
+check(L.behaviourOf({ Speed = 1, RunSpeed = 1, Sight = 1, Flee = { Run = 1, Rest = 1, RestSpeed = 1 } }) == "Flee", "inferred flee")
+check(L.behaviourOf({ Speed = 1, RunSpeed = 1, Sight = 1 }) == "None", "inferred none")
 check(White.Melee ~= nil and White.Melee.Damage == 10 and White.Melee.Interval == 1 and White.Melee.Range == 4, "white melee")
 for kind, cfg in pairs(Enemies) do
 	check(type(cfg.Name) == "string" and cfg.HP > 0 and cfg.Radius > 0, kind .. " basics")
@@ -110,64 +120,64 @@ do
 	check(g ~= nil, "threat on top")
 end
 
--- Red cycle: Idle -> Alert 0.5 -> Flee 4 -> Tired 2 -> Flee (threat) -> Tired -> Idle -------------
+-- Flee-behaviour Red (Behavior = "Flee") cycle: Idle -> Alert 0.5 -> Flee 4 -> Tired 2 -> Flee (threat) -> Tired -> Idle -------------
 do
-	local b = L.new("Red", Red, home, 25, 0)
-	check(b.State == "Idle" and b.Behaviour == "Flee", "red starts idle")
+	local b = L.new("Red", RedFlee, home, 25, 0)
+	check(b.State == "Idle" and b.Behaviour == "Flee", "flee red starts idle")
 	local pos = V(0, 0, 0)
 	local player = { Id = 7, Pos = V(30, 0, 0) }
 
-	local a = L.step(b, Red, sense(0, pos, {}))
-	check(a.State == "Idle" and a.Speed == Red.Speed, "red wanders at 8")
+	local a = L.step(b, RedFlee, sense(0, pos, {}))
+	check(a.State == "Idle" and a.Speed == RedFlee.Speed, "red wanders at 8")
 	check(a.Goal == nil or L.inZone(a.Goal :: { number }, home, 25), "wander goal in zone")
 
 	-- out of sight range
-	a = L.step(b, Red, sense(0.1, pos, { { Id = 7, Pos = V(45, 0, 0) } }))
+	a = L.step(b, RedFlee, sense(0.1, pos, { { Id = 7, Pos = V(45, 0, 0) } }))
 	check(a.State == "Idle", "beyond sight not seen")
 	-- in range but no line of sight
-	a = L.step(b, Red, sense(0.2, pos, { player }, { CanSee = function()
+	a = L.step(b, RedFlee, sense(0.2, pos, { player }, { CanSee = function()
 		return false
 	end }))
 	check(a.State == "Idle", "no LOS not seen")
 
-	a = L.step(b, Red, sense(1, pos, { player }))
+	a = L.step(b, RedFlee, sense(1, pos, { player }))
 	check(a.State == "Alert" and a.Alert == true and a.Goal == nil, "alert on sight")
 	check(a.Face ~= nil and (a.Face :: { number })[1] == 30, "faces player on alert")
-	a = L.step(b, Red, sense(1.3, pos, { player }))
+	a = L.step(b, RedFlee, sense(1.3, pos, { player }))
 	check(a.State == "Alert" and a.Alert == false, "alert pulse only once")
-	a = L.step(b, Red, sense(1.5, pos, { player }))
-	check(a.State == "Flee" and a.Speed == 13, "flee after 0.5s alert")
+	a = L.step(b, RedFlee, sense(1.5, pos, { player }))
+	check(a.State == "Flee" and a.Speed == RedFlee.RunSpeed, "flee after 0.5s alert")
 	check(a.Goal ~= nil and (a.Goal :: { number })[1] < 0, "flee goal away from player")
-	a = L.step(b, Red, sense(5.49, pos, { player }))
+	a = L.step(b, RedFlee, sense(5.49, pos, { player }))
 	check(a.State == "Flee", "still fleeing before 4s")
-	a = L.step(b, Red, sense(5.5, pos, { player }))
+	a = L.step(b, RedFlee, sense(5.5, pos, { player }))
 	check(a.State == "Tired" and a.Speed == 6, "tired after 4s flee")
-	a = L.step(b, Red, sense(7.49, pos, { player }))
+	a = L.step(b, RedFlee, sense(7.49, pos, { player }))
 	check(a.State == "Tired", "tired lasts 2s")
-	a = L.step(b, Red, sense(7.5, pos, { player }))
+	a = L.step(b, RedFlee, sense(7.5, pos, { player }))
 	check(a.State == "Flee" and a.Alert == false, "flee again while threatened, no second alert")
-	a = L.step(b, Red, sense(11.5, pos, {}))
+	a = L.step(b, RedFlee, sense(11.5, pos, {}))
 	check(a.State == "Tired", "tired again")
-	a = L.step(b, Red, sense(13.5, pos, {}))
+	a = L.step(b, RedFlee, sense(13.5, pos, {}))
 	check(a.State == "Idle", "back to wander when safe")
 
 	-- damage while idle alerts; damage while tired flees immediately
-	local b2 = L.new("Red", Red, home, 25, 0)
-	check(L.damaged(b2, Red, 1, pos, 9) == true, "damage alerts idle red")
-	a = L.step(b2, Red, sense(1, pos, { { Id = 9, Pos = V(0, 0, 20) } }))
+	local b2 = L.new("Red", RedFlee, home, 25, 0)
+	check(L.damaged(b2, RedFlee, 1, pos, 9) == true, "damage alerts idle red")
+	a = L.step(b2, RedFlee, sense(1, pos, { { Id = 9, Pos = V(0, 0, 20) } }))
 	check(a.State == "Alert" and a.Alert, "damaged red alert pulse")
-	a = L.step(b2, Red, sense(1.5, pos, { { Id = 9, Pos = V(0, 0, 20) } }))
+	a = L.step(b2, RedFlee, sense(1.5, pos, { { Id = 9, Pos = V(0, 0, 20) } }))
 	check(a.State == "Flee" and a.Goal ~= nil and (a.Goal :: { number })[3] < 0, "damaged red flees from attacker")
-	a = L.step(b2, Red, sense(5.6, pos, { { Id = 9, Pos = V(0, 0, 20) } }))
+	a = L.step(b2, RedFlee, sense(5.6, pos, { { Id = 9, Pos = V(0, 0, 20) } }))
 	check(a.State == "Tired", "red tired")
-	L.damaged(b2, Red, 5.7, pos, 9)
+	L.damaged(b2, RedFlee, 5.7, pos, 9)
 	check(b2.State == "Flee", "hit while tired -> flee")
 
 	-- fleeing red with no players left keeps running out its timer, still inside its zone
-	local b3 = L.new("Red", Red, home, 10, 0)
-	L.damaged(b3, Red, 0, pos, nil)
-	L.step(b3, Red, sense(0, pos, {}))
-	a = L.step(b3, Red, sense(0.5, pos, {}))
+	local b3 = L.new("Red", RedFlee, home, 10, 0)
+	L.damaged(b3, RedFlee, 0, pos, nil)
+	L.step(b3, RedFlee, sense(0, pos, {}))
+	a = L.step(b3, RedFlee, sense(0.5, pos, {}))
 	check(a.State == "Flee" and a.Goal ~= nil and L.inZone(a.Goal :: { number }, home, 10), "flee without threat stays in zone")
 end
 
@@ -186,6 +196,103 @@ do
 				L.segmentDistance(pos, g :: { number }, threat) >= math.min(d0, math.max(6, d0 * 0.75)) - 0.06,
 				"random flee (inside zone) never past threat " .. i
 			)
+		end
+	end
+end
+
+-- Red (v0.5 default, Behavior = "Chase"): wander -> "!" -> chase 14 -> melee 8 / 1.2 s -> leash 40 -------
+do
+	local b = L.new("Red", Red, home, 15, 0)
+	check(b.State == "Idle" and b.Behaviour == "Chase", "red starts idle, chase brain")
+	local pos = V(0, 0, 0)
+	local p = { Id = 7, Pos = V(36, 0, 0) }
+
+	local a = L.step(b, Red, sense(0, pos, {}))
+	check(a.State == "Idle" and a.Speed == 8, "red wanders at 8")
+	check(a.Goal == nil or L.inZone(a.Goal :: { number }, home, 15), "red wander goal in zone")
+	a = L.step(b, Red, sense(0.1, pos, { p }))
+	check(a.State == "Idle", "red: beyond sight 35 not seen")
+	p.Pos = V(30, 0, 0)
+	a = L.step(b, Red, sense(0.2, pos, { p }, { CanSee = function()
+		return false
+	end }))
+	check(a.State == "Idle", "red: no line of sight not seen")
+
+	a = L.step(b, Red, sense(1, pos, { p }))
+	check(a.State == "Alert" and a.Alert == true and a.Goal == nil, "red alerts on sight")
+	check(a.Face ~= nil and (a.Face :: { number })[1] == 30, "red faces player during alert")
+	a = L.step(b, Red, sense(1.3, pos, { p }))
+	check(a.State == "Alert" and a.Alert == false and a.Goal == nil, "red holds still, '!' once")
+	a = L.step(b, Red, sense(1.5, pos, { p }))
+	check(a.State == "Chase" and a.Speed == 14, "red chases at 14 after 0.5 s")
+	check(a.Goal ~= nil and (a.Goal :: { number })[1] == 30, "red runs toward the player (not away)")
+	check(a.Attack == nil, "red: no hit out of range")
+
+	-- in range: windup, then 8 damage every 1.2 s
+	pos = V(27, 0, 0)
+	a = L.step(b, Red, sense(1.6, pos, { p }))
+	check(a.Attack == nil and a.Face ~= nil, "red windup before first hit")
+	a = L.step(b, Red, sense(1.85, pos, { p }))
+	check(a.Attack == 7, "red first hit")
+	a = L.step(b, Red, sense(2.9, pos, { p }))
+	check(a.Attack == nil, "red interval 1.2 respected")
+	a = L.step(b, Red, sense(3.1, pos, { p }))
+	check(a.Attack == 7, "red second hit after 1.2 s")
+	a = L.step(b, Red, sense(3.2, V(28, 0, 0), { p }))
+	check(a.Goal == nil and a.Face ~= nil and a.Attack == nil, "red stands and faces when hugging")
+	-- player backs off: red follows again
+	p.Pos = V(34, 0, 0)
+	a = L.step(b, Red, sense(3.3, V(28, 0, 0), { p }))
+	check(a.State == "Chase" and a.Goal ~= nil and (a.Goal :: { number })[1] == 34, "red follows a retreating player")
+
+	-- leash 40 from home -> return (walk 8), players ignored on the way back
+	p.Pos = V(50, 0, 0)
+	a = L.step(b, Red, sense(4, V(40.5, 0, 0), { p }))
+	check(a.State == "Return" and a.Speed == 8 and a.Goal ~= nil and (a.Goal :: { number })[1] == 0, "red leash -> return home")
+	a = L.step(b, Red, sense(4.1, V(38, 0, 0), { { Id = 7, Pos = V(36, 0, 0) } }))
+	check(a.State == "Return" and a.Attack == nil, "returning red ignores players")
+	check(L.damaged(b, Red, 4.2, V(38, 0, 0), 7) == false and b.State == "Return", "red: no re-aggro near the leash")
+	check(L.damaged(b, Red, 4.3, V(20, 0, 0), 7) == true and b.State == "Alert", "red re-aggro when hit near home")
+	b.State = "Return"
+	a = L.step(b, Red, sense(5, V(1, 0, 1), {}))
+	check(a.State == "Idle", "red home -> idle")
+
+	-- shot from out of sight while idle: "!" then chase the shooter
+	local b2 = L.new("Red", Red, home, 15, 0)
+	check(L.damaged(b2, Red, 0, V(0, 0, 0), 9) == true, "hit alerts idle red")
+	a = L.step(b2, Red, sense(0, V(0, 0, 0), { { Id = 9, Pos = V(0, 0, 50) } }))
+	check(a.State == "Alert" and a.Alert, "hit red alert pulse")
+	a = L.step(b2, Red, sense(0.5, V(0, 0, 0), { { Id = 9, Pos = V(0, 0, 50) } }))
+	check(a.State == "Chase" and b2.Target == 9 and (a.Goal :: { number })[3] == 50, "hit red chases the shooter")
+	-- shooter goes down (leaves the targetable list), nobody else visible -> return
+	a = L.step(b2, Red, sense(0.6, V(0, 0, 9), {}))
+	check(a.State == "Return", "red target gone -> return")
+
+	-- retarget another visible player when the first one goes down
+	local b3 = L.new("Red", Red, home, 15, 0)
+	L.damaged(b3, Red, 0, V(0, 0, 0), 1)
+	L.step(b3, Red, sense(0, V(0, 0, 0), {}))
+	a = L.step(b3, Red, sense(0.5, V(0, 0, 0), { { Id = 2, Pos = V(0, 0, 10) } }))
+	check(a.State == "Chase" and b3.Target == 2, "red retargets nearest visible")
+
+	-- chasing red never flees, whatever happens
+	local b4 = L.new("Red", Red, home, 12, 0)
+	local pp = V(0, 0, 0)
+	for i = 1, 400 do
+		local t = i * 0.1
+		local players = {}
+		if rand() < 0.8 then
+			table.insert(players, { Id = 1, Pos = L.randomPointInZone(home, 45, rand) })
+		end
+		if rand() < 0.05 then
+			L.damaged(b4, Red, t, pp, 1)
+		end
+		local act = L.step(b4, Red, sense(t, pp, players))
+		check(act.State ~= "Flee" and act.State ~= "Tired", "chasing red never flees " .. i)
+		check(act.Attack == nil or act.State == "Chase", "red only hits while chasing " .. i)
+		local g = act.Goal
+		if g then
+			pp = { pp[1] + (g[1] - pp[1]) * 0.3, 0, pp[3] + (g[3] - pp[3]) * 0.3 }
 		end
 	end
 end
@@ -267,14 +374,26 @@ do
 	check(a.State == "Chase" and b.Target == 5, "after stun chase last attacker")
 	check(a.Alert == false, "no alert after stun")
 
-	local r = L.new("Red", Red, home, 15, 0)
+	local r = L.new("Red", RedFlee, home, 15, 0)
 	L.stun(r, 0, 1)
-	local ar = L.step(r, Red, sense(1, V(0, 0, 0), { p }))
-	check(ar.State == "Flee", "red resumes flee when threatened after stun")
-	local r2 = L.new("Red", Red, home, 15, 0)
+	local ar = L.step(r, RedFlee, sense(1, V(0, 0, 0), { p }))
+	check(ar.State == "Flee", "flee red resumes flee when threatened after stun")
+	local r2 = L.new("Red", RedFlee, home, 15, 0)
 	L.stun(r2, 0, 1)
-	ar = L.step(r2, Red, sense(1, V(0, 0, 0), {}))
-	check(ar.State == "Idle", "red idle after stun when safe")
+	ar = L.step(r2, RedFlee, sense(1, V(0, 0, 0), {}))
+	check(ar.State == "Idle", "flee red idle after stun when safe")
+
+	-- chasing Red: stunned mid-chase, resumes the chase (no second "!")
+	local rc = L.new("Red", Red, home, 15, 0)
+	L.damaged(rc, Red, 0, V(0, 0, 0), 4)
+	L.step(rc, Red, sense(0, V(0, 0, 0), { p }))
+	L.step(rc, Red, sense(0.5, V(0, 0, 0), { p }))
+	check(rc.State == "Chase", "red chasing before stun")
+	L.stun(rc, 1, 1)
+	ar = L.step(rc, Red, sense(1.5, V(9, 0, 0), { p }))
+	check(ar.State == "Stunned" and ar.Attack == nil, "stunned red does not hit")
+	ar = L.step(rc, Red, sense(2, V(0, 0, 0), { p }))
+	check(ar.State == "Chase" and ar.Alert == false, "red resumes chase after stun")
 end
 
 -- Dead does nothing --------------------------------------------------------------------------
@@ -308,6 +427,39 @@ do
 		return false
 	end }))
 	check(a.Goal == nil and a.State == "Idle", "nothing walkable -> stand")
+end
+
+-- Death collapse helpers -------------------------------------------------------------------------
+do
+	local C = L.CORPSE
+	local fwd, back = 0, 0
+	for _ = 1, 400 do
+		local d, sign = L.deathPush(V(10, 0, 0), V(0, 5, 0), rand)
+		check(near(d[1], 1) and near(d[2], 0) and near(d[3], 0), "push points away from the attacker, flat")
+		check(sign == 1 or sign == -1, "fall sign")
+		if sign == 1 then
+			back += 1
+		else
+			fwd += 1
+		end
+	end
+	check(back > fwd and fwd > 0, "falls both ways, mostly backward")
+	for _ = 1, 50 do
+		local d = L.deathPush(V(3, 0, 3), nil, rand)
+		check(near(math.sqrt(d[1] * d[1] + d[3] * d[3]), 1) and d[2] == 0, "random push is a flat unit vector")
+		local d2 = L.deathPush(V(3, 0, 3), V(3, 9, 3), rand)
+		check(near(math.sqrt(d2[1] * d2[1] + d2[3] * d2[3]), 1), "attacker straight above -> random flat push")
+	end
+	check(C.PushSpeed > 0 and C.PushSpeed <= 5 and C.MaxSlide >= 1 and C.MaxSlide <= 3, "small shove, not a fling")
+	check(C.Cap == 12, "12 bodies kept")
+	check(not L.corpseShouldFreeze(0.2, 10, false), "never freeze instantly")
+	check(not L.corpseShouldFreeze(1.0, 1, false), "wait for calm")
+	check(L.corpseShouldFreeze(1.0, C.CalmTicks, false), "freeze when calm")
+	check(not L.corpseShouldFreeze(1.5, C.CalmTicks, true), "keep simulating while falling")
+	check(L.corpseShouldFreeze(C.MaxSettle, 0, false), "freeze at max settle even if jittering")
+	check(not L.corpseShouldFreeze(C.MaxSettle + 1, 0, true), "falling body may run past max settle")
+	check(L.corpseShouldFreeze(C.HardMax, 0, true), "hard max always freezes")
+	check(L.corpsesToEvict(12, 12) == 0 and L.corpsesToEvict(13, 12) == 1 and L.corpsesToEvict(15, 12) == 3, "evict oldest beyond cap")
 end
 
 -- History interpolation ---------------------------------------------------------------------------

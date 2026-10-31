@@ -5,10 +5,13 @@
 -- EnemyService builds a Sense every brain tick, calls `step`, and executes the returned Action.
 --
 -- States (model attribute `State`): Idle, Alert, Flee, Tired, Chase, Return, Stunned, Dead.
---   Flee behaviour (Red):   Idle(wander) -> sees player -> Alert 0.5s -> Flee(Run) -> Tired(Rest)
---                           -> Flee again while threatened, else Idle.
---   Chase behaviour (White): Idle(wander) -> sees player or is hit -> Alert 0.5s -> Chase (+melee)
---                           -> beyond Leash from home -> Return -> Idle.
+--   Chase behaviour (Red, White; v0.5): Idle(wander) -> sees player or is hit -> Alert 0.5s
+--                           -> Chase (+melee) -> beyond Leash from home -> Return -> Idle.
+--   Flee behaviour (cfg.Behavior = "Flee", kept for later variants): Idle(wander) -> sees player
+--                           -> Alert 0.5s -> Flee(Run) -> Tired(Rest) -> Flee again while
+--                           threatened, else Idle.
+-- The behaviour comes from cfg.Behavior; without it, a Flee table means Flee and Melee + Leash
+-- means Chase.
 -- Zones are horizontal circles (x/z) around Home; y is ignored by zone math.
 
 local EnemyLogic = {}
@@ -16,6 +19,7 @@ local EnemyLogic = {}
 export type Vec3 = { number }
 
 export type Config = {
+	Behavior: string?, -- "Chase" | "Flee" | nil (inferred)
 	Speed: number,
 	RunSpeed: number,
 	Sight: number,
@@ -257,7 +261,11 @@ function EnemyLogic.detect(players: { PlayerInfo }, pos: Vec3, range: number, ca
 end
 
 -- Brain ---------------------------------------------------------------------------------
-local function behaviourOf(cfg: Config): string
+function EnemyLogic.behaviourOf(cfg: Config): string
+	local explicit = cfg.Behavior
+	if explicit == "Chase" or explicit == "Flee" then
+		return explicit
+	end
 	if cfg.Flee then
 		return "Flee"
 	elseif cfg.Melee and cfg.Leash then
@@ -269,7 +277,7 @@ end
 function EnemyLogic.new(kind: string, cfg: Config, home: Vec3, zone: number, now: number): Brain
 	return {
 		Kind = kind,
-		Behaviour = behaviourOf(cfg),
+		Behaviour = EnemyLogic.behaviourOf(cfg),
 		State = "Idle",
 		Home = copy(home),
 		Zone = math.max(0, zone),
@@ -573,6 +581,55 @@ function EnemyLogic.kill(brain: Brain)
 	brain.Goal = nil
 	brain.Target = nil
 	brain.AlertPending = false
+end
+
+-- Death collapse (CONTRACT §1.12.2) ------------------------------------------------------------
+-- The server ragdolls the body; these pure helpers decide the shove and when the body is frozen.
+EnemyLogic.CORPSE = {
+	PushSpeed = 2.5, -- horizontal studs/s given to the torso (≈ 1–3 studs of travel with friction)
+	MaxSlide = 3, -- horizontal travel cap from the death spot (studs)
+	TipSpeed = 2.6, -- rad/s tip-over spin on the torso
+	ForwardChance = 0.3, -- otherwise the body falls along the push (backward from the shooter)
+	MinSettle = 0.9, -- never freeze before this (seconds)
+	MaxSettle = 2.5, -- freeze by now unless still falling
+	HardMax = 5, -- freeze no matter what
+	CalmSpeed = 0.6, -- every part slower than this (studs/s) counts as calm
+	CalmTicks = 3, -- consecutive calm checks (0.1 s apart) before freezing
+	Cap = 12, -- bodies kept per stage; older ones fade out
+}
+
+-- Horizontal unit push direction (away from `from`, random when unknown or on top) and the fall
+-- sign: 1 = topple along the push (backward from the attacker), -1 = forward toward the attacker.
+function EnemyLogic.deathPush(pos: Vec3, from: Vec3?, rand: () -> number): (Vec3, number)
+	local dx, dz = 0, 0
+	if from then
+		dx, dz = pos[1] - from[1], pos[3] - from[3]
+	end
+	local len = math.sqrt(dx * dx + dz * dz)
+	if len < 0.05 then
+		local a = rand() * TAU
+		dx, dz, len = math.cos(a), math.sin(a), 1
+	end
+	local sign = if rand() < EnemyLogic.CORPSE.ForwardChance then -1 else 1
+	return { dx / len, 0, dz / len }, sign
+end
+
+-- Should a settling body be anchored now? `calmTicks` = consecutive checks with every part slower
+-- than CalmSpeed; `falling` = the torso is still dropping (e.g. slid off a ledge).
+function EnemyLogic.corpseShouldFreeze(elapsed: number, calmTicks: number, falling: boolean): boolean
+	local c = EnemyLogic.CORPSE
+	if elapsed >= c.HardMax then
+		return true
+	end
+	if elapsed < c.MinSettle or falling then
+		return false
+	end
+	return calmTicks >= c.CalmTicks or elapsed >= c.MaxSettle
+end
+
+-- How many of the oldest bodies to fade out after one more is added (count includes the new one).
+function EnemyLogic.corpsesToEvict(count: number, cap: number): number
+	return math.max(0, count - math.max(0, cap))
 end
 
 -- Position history ------------------------------------------------------------------------
