@@ -63,7 +63,15 @@ local KNOWN_TAGS = {
 	KeyPickup = true,
 	KeyDoor = true,
 	VehicleSpawn = true,
+	StartDoor = true,
+	StartRoom = true,
 }
+local PICKUP_TAGS = { "WeaponPickup", "HealthPickup", "AmmoPickup" }
+
+-- Start room part names (must match Kit.Names). Overhead parts are ceilings: not a floor for the height grid.
+Validate.DoorName = "StartDoor"
+Validate.RoofName = "StartRoomRoof"
+Validate.Overhead = { StartRoomRoof = true, DoorLintel = true }
 
 -- Math ------------------------------------------------------------------------------
 
@@ -194,7 +202,14 @@ end
 
 -- Height grid ------------------------------------------------------------------------
 
-function Validate.grid(spec: any, boxes: { Box }, res: number?): Grid
+-- skip = part names left out (ceilings, an open door); keep = optional filter (false = leave the box out).
+function Validate.grid(
+	spec: any,
+	boxes: { Box },
+	res: number?,
+	skip: { [string]: boolean }?,
+	keep: ((Box) -> boolean)?
+): Grid
 	local r = res or 1
 	local w, d = spec.Size[1], spec.Size[3]
 	local nx, nz = math.ceil(w / r), math.ceil(d / r)
@@ -203,7 +218,7 @@ function Validate.grid(spec: any, boxes: { Box }, res: number?): Grid
 	local solid: { boolean } = table.create(nx * nz, false)
 	local eps = 0.05
 	for _, b in boxes do
-		if b.collide then
+		if b.collide and not (skip and skip[b.name]) and (keep == nil or keep(b)) then
 			local i0 = math.max(1, math.floor((b.min[1] + eps - x0) / r) + 1)
 			local i1 = math.min(nx, math.ceil((b.max[1] - eps - x0) / r))
 			local k0 = math.max(1, math.floor((b.min[3] + eps - z0) / r) + 1)
@@ -288,6 +303,19 @@ end
 
 local function isColor(s: any): boolean
 	return type(s) == "string" and string.match(s, "^#%x%x%x%x%x%x$") ~= nil
+end
+
+-- "x,y,z" -> {x, y, z} (positive numbers) or nil
+function Validate.parseSize(s: any): Vec3?
+	if type(s) ~= "string" then
+		return nil
+	end
+	local a, b, c = string.match(s, "^%s*([%d%.%-]+)%s*,%s*([%d%.%-]+)%s*,%s*([%d%.%-]+)%s*$")
+	local x, y, z = tonumber(a), tonumber(b), tonumber(c)
+	if x == nil or y == nil or z == nil or x <= 0 or y <= 0 or z <= 0 then
+		return nil
+	end
+	return { x :: number, y :: number, z :: number }
 end
 
 local function isVec(v: any): boolean
@@ -473,17 +501,65 @@ function Validate.run(spec: any, opts: Options?): Report
 		warn("lobby has EnemySpawn markers")
 	end
 	local ids: { [string]: boolean } = {}
-	for _, m in list("WeaponPickup") do
-		local a = m.Attr or {}
-		if type(a.Weapon) ~= "string" or a.Weapon == "" then
-			err("WeaponPickup without Weapon at " .. fmt(m.Pos))
+	for _, tag in PICKUP_TAGS do
+		for _, m in list(tag) do
+			local a = m.Attr or {}
+			if tag == "WeaponPickup" and (type(a.Weapon) ~= "string" or a.Weapon == "") then
+				err("WeaponPickup without Weapon at " .. fmt(m.Pos))
+			end
+			if type(m.Id) ~= "string" then
+				err(tag .. " without Id at " .. fmt(m.Pos))
+			elseif ids[m.Id] then
+				err("duplicate " .. tag .. " Id " .. m.Id)
+			else
+				ids[m.Id] = true
+			end
 		end
-		if type(m.Id) ~= "string" then
-			err("WeaponPickup without Id at " .. fmt(m.Pos))
-		elseif ids[m.Id] then
-			err("duplicate WeaponPickup Id " .. m.Id)
+	end
+	-- start room (v0.5): exactly one StartDoor and one StartRoom per stage
+	local room: { min: Vec3, max: Vec3, center: Vec3 }? = nil
+	local door = list("StartDoor")[1]
+	if isStage then
+		if #list("StartDoor") ~= 1 then
+			err(string.format("needs exactly 1 StartDoor, has %d", #list("StartDoor")))
+		end
+		if #list("StartRoom") ~= 1 then
+			err(string.format("needs exactly 1 StartRoom, has %d", #list("StartRoom")))
+		end
+	end
+	local roomMarker = list("StartRoom")[1]
+	if roomMarker then
+		local size = Validate.parseSize((roomMarker.Attr or {}).Size)
+		if size == nil then
+			err("StartRoom needs Attr Size = \"x,y,z\" at " .. fmt(roomMarker.Pos))
 		else
-			ids[m.Id] = true
+			local c, s = roomMarker.Pos, size :: Vec3
+			room = {
+				center = c,
+				min = { c[1] - s[1] / 2, c[2] - s[2] / 2, c[3] - s[3] / 2 },
+				max = { c[1] + s[1] / 2, c[2] + s[2] / 2, c[3] + s[3] / 2 },
+			}
+			stats.startRoom = string.format("%gx%gx%g", s[1], s[2], s[3])
+		end
+	end
+	local function inRoom(p: Vec3, pad: number): boolean
+		local r = room
+		if r == nil then
+			return false
+		end
+		return p[1] >= r.min[1] - pad
+			and p[1] <= r.max[1] + pad
+			and p[3] >= r.min[3] - pad
+			and p[3] <= r.max[3] + pad
+	end
+	if room then
+		for _, m in list("PlayerSpawn") do
+			if not inRoom(m.Pos, 0) or m.Pos[2] < room.min[2] or m.Pos[2] > room.max[2] then
+				err("PlayerSpawn outside the StartRoom at " .. fmt(m.Pos))
+			end
+		end
+		if door and not inRoom(door.Pos, 2.5) then
+			err("StartDoor is not on the StartRoom's wall at " .. fmt(door.Pos))
 		end
 	end
 	local anyIds: { [string]: boolean } = {}
@@ -505,7 +581,11 @@ function Validate.run(spec: any, opts: Options?): Report
 			err(m.Tag .. " outside map bounds at " .. fmt(p))
 		end
 		-- the Board marker becomes the panel inside its own frame: ignore the frame for it
-		local ignore = if m.Tag == "Board" then { BoardFrame = true } else nil
+		-- the StartDoor marker sits inside the door it names
+		local ignore = if m.Tag == "Board"
+			then { BoardFrame = true }
+			elseif m.Tag == "StartDoor" then { [Validate.DoorName] = true }
+			else nil
 		local inside = Validate.blocked(
 			boxes,
 			{ p[1] - 0.05, p[2] - 0.05, p[3] - 0.05 },
@@ -517,9 +597,10 @@ function Validate.run(spec: any, opts: Options?): Report
 		end
 	end
 
-	local bodyHeight: { [string]: number } = { PlayerSpawn = 5, EnemySpawn = 5, WeaponPickup = 3 }
+	local bodyHeight: { [string]: number } =
+		{ PlayerSpawn = 5, EnemySpawn = 5, WeaponPickup = 3, HealthPickup = 3, AmmoPickup = 3 }
 	local groundOf: { [any]: number } = {}
-	for _, tag in { "PlayerSpawn", "EnemySpawn", "WeaponPickup" } do
+	for _, tag in { "PlayerSpawn", "EnemySpawn", "WeaponPickup", "HealthPickup", "AmmoPickup" } do
 		local bodyH = bodyHeight[tag]
 		for _, m in list(tag) do
 			local p = m.Pos
@@ -533,7 +614,7 @@ function Validate.run(spec: any, opts: Options?): Report
 				err(string.format("%s floor is %.1f below at %s (needs 0-4)", tag, gap, fmt(p)))
 			end
 			groundOf[m] = g :: number
-			local r = if tag == "WeaponPickup" then 0.5 else 1
+			local r = if bodyH < 5 then 0.5 else 1
 			local hit = Validate.blocked(
 				boxes,
 				{ p[1] - r, (g :: number) + 0.3, p[3] - r },
@@ -593,9 +674,51 @@ function Validate.run(spec: any, opts: Options?): Report
 	end
 	stats.zones = zoneStats
 
-	-- Reachability -------------------------------------------------------------------
-	local grid = Validate.grid(spec, boxes, 1)
+	-- Enemy zones must not reach into the start room (its walls included: interior + 1).
+	if room then
+		for _, m in list("EnemySpawn") do
+			local zone = (m.Attr or {}).Zone
+			if type(zone) == "number" then
+				local px = math.clamp(m.Pos[1], room.min[1] - 1, room.max[1] + 1)
+				local pz = math.clamp(m.Pos[3], room.min[3] - 1, room.max[3] + 1)
+				local dd = math.sqrt((m.Pos[1] - px) ^ 2 + (m.Pos[3] - pz) ^ 2)
+				if dd < zone then
+					err(string.format("%s zone %.0f at %s overlaps the StartRoom", tostring(m.Attr.Kind), zone, fmt(m.Pos)))
+				end
+			end
+		end
+	end
+
+	-- Reachability (start door open, ceilings ignored) ----------------------------------
+	local reachSkip: { [string]: boolean } = table.clone(Validate.Overhead)
+	reachSkip[Validate.DoorName] = true
+	local grid = Validate.grid(spec, boxes, 1, reachSkip)
 	report.grid = grid
+	-- Under the start room roof nobody stands where the ceiling is closer than a body height: those cells
+	-- (walls, a board's top edge) become walls, so the heightmap does not walk over the room's walls.
+	local roofTop: number?, roofBottom: number? = nil, nil
+	for _, b in boxes do
+		if b.collide and b.name == Validate.RoofName then
+			roofTop = math.max(roofTop or -math.huge, b.max[2])
+			roofBottom = math.min(roofBottom or math.huge, b.min[2])
+		end
+	end
+	local function capUnderRoof(g: Grid)
+		if room == nil or roofBottom == nil then
+			return
+		end
+		local cap = (roofBottom :: number) - 5
+		for i = 1, g.nx * g.nz do
+			if g.solid[i] and g.h[i] > cap then
+				local x = g.x0 + ((i - 1) % g.nx + 0.5) * g.res
+				local z = g.z0 + ((i - 1) // g.nx + 0.5) * g.res
+				if inRoom({ x, 0, z }, 1) then
+					g.h[i] = 1000
+				end
+			end
+		end
+	end
+	capUnderRoof(grid)
 	local starts: { number } = {}
 	for _, m in list("PlayerSpawn") do
 		local c = Validate.cellOf(grid, m.Pos[1], m.Pos[3])
@@ -638,8 +761,8 @@ function Validate.run(spec: any, opts: Options?): Report
 			perimTop = math.max(perimTop or 0, b.max[2])
 		end
 	end
+	local loose = Validate.flood(grid, starts, Validate.ClimbMax, false)
 	if perimTop then
-		local loose = Validate.flood(grid, starts, Validate.ClimbMax, false)
 		local risky = 0
 		local example = ""
 		for i = 1, grid.nx * grid.nz do
@@ -663,6 +786,80 @@ function Validate.run(spec: any, opts: Options?): Report
 		warn("no Perimeter parts: arena escape not checked")
 	end
 
+	-- Start room seal (door closed): from the spawns, even the generous climb never leaves the room,
+	-- no enemy marker is visible, and nobody outside can climb onto the room's roof.
+	local doorEye: Vec3? = nil
+	if room then
+		-- door stays solid; anything a player can walk under (bottom >= room floor + 5) is left out,
+		-- so a wall that does not reach the floor shows up as a gap
+		local underY = room.min[2] + 5
+		local sealGrid = Validate.grid(spec, boxes, 1, Validate.Overhead, function(b: Box): boolean
+			return b.min[2] < underY
+		end)
+		capUnderRoof(sealGrid)
+		local inside = Validate.flood(sealGrid, starts, Validate.ClimbMax, false)
+		local leaks, leakAt = 0, ""
+		for i = 1, sealGrid.nx * sealGrid.nz do
+			if inside[i] then
+				local x = sealGrid.x0 + ((i - 1) % sealGrid.nx + 0.5) * sealGrid.res
+				local z = sealGrid.z0 + ((i - 1) // sealGrid.nx + 0.5) * sealGrid.res
+				if not inRoom({ x, 0, z }, 0.5) then
+					leaks += 1
+					leakAt = string.format("(%.0f, %.0f)", x, z)
+				end
+			end
+		end
+		stats.startRoomLeakCells = leaks
+		if leaks > 0 then
+			err(string.format("StartRoom is not sealed with the door closed: %d cells outside reachable, e.g. %s", leaks, leakAt))
+		end
+		local seen = 0
+		for _, s in list("PlayerSpawn") do
+			local e = { s.Pos[1], s.Pos[2] + 1.5, s.Pos[3] }
+			for _, m in list("EnemySpawn") do
+				if Validate.segmentHit(boxes, e, { m.Pos[1], m.Pos[2] + 1, m.Pos[3] }) == nil then
+					seen += 1
+				end
+			end
+		end
+		if seen > 0 then
+			err(string.format("%d enemy markers visible from inside the closed StartRoom", seen))
+		end
+		if roofTop then
+			local climbable = 0
+			for i = 1, grid.nx * grid.nz do
+				if loose[i] and grid.h[i] >= (roofTop :: number) - Validate.ClimbMax then
+					local x = grid.x0 + ((i - 1) % grid.nx + 0.5) * grid.res
+					local z = grid.z0 + ((i - 1) // grid.nx + 0.5) * grid.res
+					if inRoom({ x, 0, z }, 4) and not inRoom({ x, 0, z }, 0) then
+						climbable += 1
+					end
+				end
+			end
+			if climbable > 0 then
+				err(string.format("StartRoom roof can be climbed from %d cells", climbable))
+			end
+		end
+		if door then
+			-- eye of someone standing 3 studs outside the door on the arena side
+			local c = room.center
+			local dx, dz = door.Pos[1] - c[1], door.Pos[3] - c[3]
+			local ux, uz = 0, 0
+			if math.abs(dx) > math.abs(dz) then
+				ux = if dx > 0 then 1 else -1
+			else
+				uz = if dz > 0 then 1 else -1
+			end
+			local dh = (door.Attr or {}).Height
+			local floorY = door.Pos[2] - (if type(dh) == "number" then dh / 2 else 4)
+			doorEye = { door.Pos[1] + ux * 3, floorY + 4.5, door.Pos[3] + uz * 3 }
+			local dc = Validate.cellOf(grid, door.Pos[1] + ux * 3, door.Pos[3] + uz * 3)
+			if dc == nil or not fwd[dc] then
+				err("arena in front of the StartDoor not reachable from the spawns (door open)")
+			end
+		end
+	end
+
 	local function reachableAt(p: Vec3): boolean
 		local c = Validate.cellOf(grid, p[1], p[3])
 		return c ~= nil and fwd[c] == true
@@ -671,10 +868,17 @@ function Validate.run(spec: any, opts: Options?): Report
 	for _, m in list("PlayerSpawn") do
 		table.insert(eyes, { m.Pos[1], m.Pos[2] + 1.5, m.Pos[3] })
 	end
-	for _, m in list("WeaponPickup") do
-		table.insert(eyes, { m.Pos[1], m.Pos[2] + 2.5, m.Pos[3] })
-		if not reachableAt(m.Pos) then
-			err("WeaponPickup not reachable on foot at " .. fmt(m.Pos))
+	if doorEye then
+		table.insert(eyes, doorEye :: Vec3)
+	end
+	for _, tag in PICKUP_TAGS do
+		for _, m in list(tag) do
+			if tag == "WeaponPickup" then
+				table.insert(eyes, { m.Pos[1], m.Pos[2] + 2.5, m.Pos[3] })
+			end
+			if not reachableAt(m.Pos) then
+				err(tag .. " not reachable on foot at " .. fmt(m.Pos))
+			end
 		end
 	end
 	local reachableEnemies, sniperOnly = 0, 0
@@ -728,7 +932,8 @@ function Validate.run(spec: any, opts: Options?): Report
 			cy += m.Pos[2]
 			cz += m.Pos[3]
 		end
-		local eye = { cx / #spawns, cy / #spawns + 1.5, cz / #spawns }
+		-- what the party sees from the spawns, or (with a start room) right outside the opened door
+		local eye: Vec3 = doorEye or { cx / #spawns, cy / #spawns + 1.5, cz / #spawns }
 		local visible = 0
 		for _, m in list("EnemySpawn") do
 			if m.Attr and m.Attr.Kind == "Red" then

@@ -66,8 +66,9 @@ for _, name in names do
 	end
 	fs.writeFile("build/maps/" .. name .. ".json", serde.encode("json", out, false))
 	local st = report.stats
+	local mk = st.markers or {}
 	print(string.format(
-		"%s %s: %d parts, %d markers, red weight %s, reach %s%%, traps %s, reds seen from spawn %s",
+		"%s %s: %d parts, %d markers, red weight %s, reach %s%%, traps %s, reds seen from spawn/door %s%s",
 		if #report.errors == 0 then "ok  " else "FAIL",
 		name,
 		#spec.Parts,
@@ -75,7 +76,17 @@ for _, name in names do
 		tostring(st.redWeight),
 		tostring(st.reachablePct),
 		tostring(st.trapCells),
-		tostring(st.redMarkersVisibleFromSpawn)
+		tostring(st.redMarkersVisibleFromSpawn),
+		if st.startRoom
+			then string.format(
+				", start room %s (leak %s), pickups W%d H%d A%d",
+				st.startRoom,
+				tostring(st.startRoomLeakCells),
+				mk.WeaponPickup or 0,
+				mk.HealthPickup or 0,
+				mk.AmmoPickup or 0
+			)
+			else ""
 	))
 	for _, e in report.errors do
 		print("  error: " .. e)

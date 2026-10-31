@@ -71,6 +71,20 @@ Kit.C = {
 	Bench = "#9B6A3A",
 	Roof = "#5D6B7A",
 	Window = "#9ED8FF",
+	Door = "#F7F7F2",
+	DoorFrame = "#22305E",
+	DoorHandle = "#7D8590",
+	RoomWall = "#B9BCC0",
+	RoomBand = "#22305E",
+	RoomFloor = "#C99B67",
+}
+
+-- Part names with a meaning for MapBuilder / StageService / Validate (v0.5 start room).
+Kit.Names = {
+	Door = "StartDoor", -- every moving part of the start door (StageService slides all of them)
+	Lintel = "DoorLintel", -- static parts above the doorway (overhead: not a floor for reachability)
+	Roof = "StartRoomRoof", -- start room ceiling (overhead)
+	RoomWall = "StartRoomWall",
 }
 
 local H = Kit.Heights
@@ -671,7 +685,8 @@ end
 
 -- Chalkboard. pos = ground point under the board, faceTo = {x, z} the board should face.
 -- Adds the wooden frame/legs as parts and a `Board` marker at the panel center (MapBuilder turns
--- the marker into the visible dark-green panel with the text). opts.w (12), opts.h (7), opts.lift (2.5).
+-- the marker into the visible dark-green panel with the text). opts.w (12), opts.h (7), opts.lift (2.5),
+-- opts.legs (true; false = wall-mounted: the backing's rear face is 1.0 behind `pos`, put `pos` 1.0 off the wall).
 function Kit.board(parts: { Part }, markers: { Marker }, pos: Vec3, faceTo: { number }, opts: Opts?): Marker
 	local o: Opts = opts or {}
 	local bw: number = o.w or 12
@@ -689,8 +704,10 @@ function Kit.board(parts: { Part }, markers: { Marker }, pos: Vec3, faceTo: { nu
 	local frame = { Rot = rot, Name = "BoardFrame" }
 	-- backing panel 0.6 behind the board face, legs at both sides, top and bottom rails
 	Kit.box(parts, at(0, 0.7, cy), { bw + 1.2, bh + 1.2, 0.6 }, C.BoardFrame, "WoodPlanks", frame)
-	for _, s in { -1, 1 } do
-		Kit.box(parts, at(s * (bw / 2 + 0.4), 0.7, (pos[2] + cy + bh / 2 + 0.6) / 2), { 0.8, cy + bh / 2 + 0.6 - pos[2], 0.8 }, C.WoodDark, "Wood", frame)
+	if o.legs ~= false then
+		for _, s in { -1, 1 } do
+			Kit.box(parts, at(s * (bw / 2 + 0.4), 0.7, (pos[2] + cy + bh / 2 + 0.6) / 2), { 0.8, cy + bh / 2 + 0.6 - pos[2], 0.8 }, C.WoodDark, "Wood", frame)
+		end
 	end
 	Kit.box(parts, at(0, 0.1, cy - bh / 2 - 0.35), { bw + 0.6, 0.5, 1.0 }, C.BoardFrame, "WoodPlanks", frame) -- chalk tray
 	local attr: Attr = { Width = bw, Height = bh }
@@ -796,6 +813,161 @@ function Kit.plinth(parts: { Part }, pos: Vec3, size: number?): Vec3
 	local s = size or 3
 	Kit.block(parts, pos, { s, 1, s }, C.Marble, "Marble", { Name = "Plinth" })
 	return { pos[1], pos[2] + 1, pos[3] }
+end
+
+-- Health (red cross box) / ammo (green box) pickups (CONTRACT §1.12.6), floating PickupLift above `surface`
+-- like weapons. id must be unique within the map. ammo: optional `weapon` hint attribute (e.g. "Pistol").
+function Kit.health(markers: { Marker }, surface: Vec3, id: string): Marker
+	return Kit.marker(markers, "HealthPickup", { surface[1], surface[2] + Kit.PickupLift, surface[3] }, nil, id)
+end
+
+function Kit.ammo(markers: { Marker }, surface: Vec3, id: string, weapon: string?): Marker
+	local attr: Attr? = nil
+	if weapon then
+		local a: Attr = { Weapon = weapon }
+		attr = a
+	end
+	return Kit.marker(markers, "AmmoPickup", { surface[1], surface[2] + Kit.PickupLift, surface[3] }, attr, id)
+end
+
+-- Start room (CONTRACT §1.12.3) ------------------------------------------------------------
+
+Kit.Room = { Length = 14, Depth = 10, Height = 12, Wall = 1, DoorWidth = 6, DoorHeight = 8, DoorThick = 0.6, RoofThick = 0.8 }
+
+export type StartRoom = {
+	spots: { Vec3 }, -- floor points (room floor top) for pickups, off the spawn row and the door
+	door: Vec3, -- door center
+	outside: Vec3, -- arena floor point 3 studs in front of the door
+	floor: number, -- room floor top
+	min: Vec3, -- interior box
+	max: Vec3,
+}
+
+-- Enclosed start room attached to an arena wall. `center` = interior floor center {x, y, z} (y = arena floor top).
+--   opts.facing  direction from the room into the arena: "-z" (default) | "+z" | "-x" | "+x". The door is in that wall.
+--   opts.length  interior size along the door wall (14), opts.depth (10), opts.height wall height (12, sealed by a roof).
+--   opts.door    { at = 2 (door center offset along the wall, toward the board end), width = 6, height = 8 }.
+--   opts.board   "right" (default) | "left": end wall with the chalkboard, seen from inside looking at the arena.
+-- Builds: wooden floor, four walls + roof, white sliding pocket door (parts named Kit.Names.Door) in a navy frame,
+-- ceiling light + light above the door outside, a wall-mounted Board facing the spawns, four PlayerSpawn markers
+-- (Spawn1..4) at the far end looking at the board, a StartDoor marker (door center; Attr Slide = "x,y,z" open offset,
+-- Width, Height; Rot faces the arena) and a StartRoom marker (interior center; Attr Size = "x,y,z").
+-- The door slides along the wall into the wall segment beside it (hidden inside the wall thickness).
+function Kit.startRoom(parts: { Part }, markers: { Marker }, center: Vec3, opts: Opts?): StartRoom
+	local o: Opts = opts or {}
+	local Rm = Kit.Room
+	local F = DIRS[o.facing or "-z"]
+	assert(F ~= nil, "bad startRoom facing " .. tostring(o.facing))
+	local m = if o.board == "left" then -1 else 1
+	local Rx, Rz = -F[2] * m, F[1] * m -- local right axis (toward the board end)
+	local Fx, Fz = F[1], F[2]
+	local L: number = o.length or Rm.Length
+	local Dp: number = o.depth or Rm.Depth
+	local Ht: number = o.height or Rm.Height
+	local t: number = Rm.Wall
+	local dopt: Opts = o.door or {}
+	local dw: number = dopt.width or Rm.DoorWidth
+	local dh: number = dopt.height or Rm.DoorHeight
+	local dat: number = dopt.at or 2
+	local dth = Rm.DoorThick
+	assert(Ht >= 10 and dh <= Ht - 2, "startRoom: wall height >= 10 with a lintel above the door")
+	assert(dat - dw / 2 >= -L / 2 + 1 and dat + dw / 2 <= L / 2 - 1, "startRoom: door must fit in its wall")
+	assert((dat - dw / 2) - (-L / 2 - t) >= dw, "startRoom: no wall pocket for the sliding door")
+	local cx, y0, cz = center[1], center[2], center[3]
+	local alongX = Rx ~= 0
+
+	local function W(r: number, f: number): (number, number)
+		return cx + r * Rx + f * Fx, cz + r * Rz + f * Fz
+	end
+	local function sz(sr: number, h: number, sf: number): Vec3
+		if alongX then
+			return { sr, h, sf }
+		end
+		return { sf, h, sr }
+	end
+	-- local span r0..r1 (along the wall), f0..f1 (toward the arena), ya..yb
+	local function spanL(r0: number, r1: number, f0: number, f1: number, ya: number, yb: number, color: string, mat: string, extra: Opts?): Part
+		local x, z = W((r0 + r1) / 2, (f0 + f1) / 2)
+		return Kit.box(parts, { x, (ya + yb) / 2, z }, sz(r1 - r0, yb - ya, f1 - f0), color, mat, extra)
+	end
+	local N = Kit.Names
+	local wallOpt = { Name = N.RoomWall }
+	local yt = y0 + Ht
+	local hl, hd = L / 2, Dp / 2
+
+	-- floor, walls, roof (the back wall closes the room even when it stands against the perimeter glass)
+	local fx, fz = W(0, 0)
+	Kit.patch(parts, { fx, y0, fz }, if alongX then { L, Dp } else { Dp, L }, C.RoomFloor, "WoodPlanks", { Name = "RoomFloor" })
+	spanL(-hl - t, hl + t, -hd - t, -hd, y0, yt, C.RoomWall, "Concrete", wallOpt) -- back
+	spanL(-hl - t, -hl, -hd, hd, y0, yt, C.RoomWall, "Concrete", wallOpt) -- spawn end
+	spanL(hl, hl + t, -hd, hd, y0, yt, C.RoomWall, "Concrete", wallOpt) -- board end
+	spanL(-hl - t, dat - dw / 2, hd, hd + t, y0, yt, C.RoomWall, "Concrete", wallOpt) -- door wall, pocket side
+	spanL(dat + dw / 2, hl + t, hd, hd + t, y0, yt, C.RoomWall, "Concrete", wallOpt) -- door wall, other side
+	spanL(dat - dw / 2, dat + dw / 2, hd, hd + t, y0 + dh, yt, C.RoomWall, "Concrete", { Name = N.Lintel })
+	spanL(-hl - t, hl + t, -hd - t, hd + t, yt, yt + Rm.RoofThick, C.Roof, "Concrete", { Name = N.Roof })
+	-- navy band along the outside top edge of the door wall (reads as "the door" from across the arena)
+	spanL(-hl - t, hl + t, hd + t, hd + t + 0.3, yt - 1.2, yt, C.RoomBand, "SmoothPlastic", { Name = "RoomBand", Collide = false })
+
+	-- door frame (posts static, top bar overhead) and the white door
+	local fd0, fd1 = hd - 0.2, hd + t + 0.2
+	spanL(dat - dw / 2 - 0.6, dat - dw / 2, fd0, fd1, y0, y0 + dh + 0.6, C.DoorFrame, "SmoothPlastic", { Name = "DoorFrame" })
+	spanL(dat + dw / 2, dat + dw / 2 + 0.6, fd0, fd1, y0, y0 + dh + 0.6, C.DoorFrame, "SmoothPlastic", { Name = "DoorFrame" })
+	spanL(dat - dw / 2 - 0.6, dat + dw / 2 + 0.6, fd0, fd1, y0 + dh, y0 + dh + 0.6, C.DoorFrame, "SmoothPlastic", { Name = N.Lintel })
+	local fm = hd + t / 2 -- door plane (middle of the wall)
+	spanL(dat - dw / 2, dat + dw / 2, fm - dth / 2, fm + dth / 2, y0, y0 + dh, C.Door, "SmoothPlastic", { Name = N.Door })
+	for _, s in { -1, 1 } do
+		local f = fm + s * (dth / 2 + 0.075)
+		spanL(dat + dw / 2 - 1.1, dat + dw / 2 - 0.8, f - 0.075, f + 0.075, y0 + 2.8, y0 + 4.4, C.DoorHandle, "Metal", { Name = N.Door, Collide = false })
+	end
+
+	-- lights: ceiling panel inside, lamp above the door outside
+	spanL(-1.5, 1.5, -1.5, 1.5, yt - 0.3, yt - 0.05, C.Lamp, "Neon", { Name = "Light", Collide = false })
+	spanL(dat - 1, dat + 1, hd + t + 0.3, hd + t + 0.9, y0 + dh + 1.2, y0 + dh + 1.8, C.Lamp, "Neon", { Name = "Light", Collide = false })
+
+	-- board on the right end wall, spawns at the other end looking at it
+	local floorTop = y0 + 0.2
+	local bx, bz = W(hl - 1.0, 0)
+	Kit.board(parts, markers, { bx, floorTop, bz }, { fx, fz }, { w = 8, h = 5, lift = 2.3, legs = false })
+	for i, f in { -3.6, -1.2, 1.2, 3.6 } do
+		local sx, sz2 = W(-hl + 2.5, f)
+		Kit.playerSpawn(markers, { sx, floorTop, sz2 }, { bx, bz }, "Spawn" .. i)
+	end
+
+	-- markers
+	local dx, dz = W(dat, fm)
+	local ox, oz = W(dat, hd + t + 3)
+	local doorAttr: Attr = {
+		Slide = string.format("%g,0,%g", r3(-dw * Rx), r3(-dw * Rz)),
+		Width = dw,
+		Height = dh,
+	}
+	Kit.marker(markers, "StartDoor", { dx, y0 + dh / 2, dz }, doorAttr, nil, Kit.faceRot({ dx, dz }, { ox, oz }))
+	local sizeX, sizeZ = if alongX then L else Dp, if alongX then Dp else L
+	local roomAttr: Attr = { Size = string.format("%g,%g,%g", sizeX, Ht, sizeZ) }
+	Kit.marker(markers, "StartRoom", { fx, y0 + Ht / 2, fz }, roomAttr)
+
+	local spots: { Vec3 } = {}
+	for _, rf in { { 1, -2.5 }, { 3.5, -2.5 }, { 1, 1.5 } } do
+		local px, pz = W(rf[1], rf[2])
+		table.insert(spots, v3(px, floorTop, pz))
+	end
+	return {
+		spots = spots,
+		door = v3(dx, y0 + dh / 2, dz),
+		outside = v3(ox, y0, oz),
+		floor = floorTop,
+		min = v3(fx - sizeX / 2, y0, fz - sizeZ / 2),
+		max = v3(fx + sizeX / 2, yt, fz + sizeZ / 2),
+	}
+end
+
+-- Start room standing against the south perimeter (inner face z = d/2) of a w×d arena, door to the north.
+-- x = interior center x (default 0). Same opts as startRoom.
+function Kit.startRoomSouth(parts: { Part }, markers: { Marker }, d: number, x: number?, opts: Opts?): StartRoom
+	local o: Opts = table.clone(opts or {})
+	o.facing = "-z"
+	local depth: number = o.depth or Kit.Room.Depth
+	return Kit.startRoom(parts, markers, { x or 0, 0, d / 2 - Kit.Room.Wall - depth / 2 }, o)
 end
 
 return Kit

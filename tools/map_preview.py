@@ -19,7 +19,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib import cm, colors as mcolors  # noqa: E402
-from matplotlib.patches import Circle, Ellipse, Polygon  # noqa: E402,F401
+from matplotlib.patches import Circle, Ellipse, Polygon, Rectangle  # noqa: E402,F401
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAPS = os.path.join(ROOT, "build", "maps")
@@ -31,8 +31,14 @@ MARKER_STYLE = {
     "White": ("#d8d8d8", "o", "White"),
     "WeaponPickup": ("#ffd400", "*", "weapon"),
     "Board": ("#1f6fff", "s", "board"),
+    "HealthPickup": ("#ff3030", "P", "health"),
+    "AmmoPickup": ("#27c45a", "s", "ammo"),
     "Other": ("#bb66ff", "D", "other"),
 }
+# drawn as shapes, not as point icons
+SHAPE_MARKERS = ("StartDoor", "StartRoom")
+# ceilings / roof trims: hidden in the top view (so the start room's inside shows), translucent in the iso view
+OVERHEAD = ("StartRoomRoof", "DoorLintel", "RoomBand")
 
 
 # ----------------------------------------------------------------------------- geometry
@@ -225,11 +231,46 @@ def board_panels(spec):
     return out
 
 
-def collect(spec):
+def start_room(spec):
+    """(min_x, min_z, max_x, max_z, center, size) of the StartRoom marker, or None."""
+    for m in spec["Markers"]:
+        if m["Tag"] == "StartRoom":
+            try:
+                sx, sy, sz = (float(v) for v in str((m.get("Attr") or {}).get("Size", "")).split(","))
+            except ValueError:
+                return None
+            x, y, z = m["Pos"]
+            return (x - sx / 2, z - sz / 2, x + sx / 2, z + sz / 2, (x, y, z), (sx, sy, sz))
+    return None
+
+
+def in_room(room, x, z, pad=0.0):
+    return room is not None and room[0] - pad <= x <= room[2] + pad and room[1] - pad <= z <= room[3] + pad
+
+
+def door_parts(spec):
+    return [p for p in spec["Parts"] if p.get("Name") == "StartDoor" and p.get("Collide", True) is not False]
+
+
+def door_slide(spec):
+    for m in spec["Markers"]:
+        if m["Tag"] == "StartDoor":
+            try:
+                return [float(v) for v in str((m.get("Attr") or {}).get("Slide", "")).split(",")]
+            except ValueError:
+                return None
+    return None
+
+
+def collect(spec, top_view=False):
     items = []
+    room = start_room(spec)
     for i, part in enumerate(list(spec["Parts"]) + board_panels(spec)):
         t = part.get("Transparency", 0) or 0
         if t >= 0.95:
+            continue
+        name = part.get("Name", "")
+        if top_view and (name in OVERHEAD or (name == "Light" and in_room(room, part["Pos"][0], part["Pos"][2]))):
             continue
         faces = part_faces(part)
         items.append((i, part, faces, t))
@@ -247,7 +288,7 @@ def render_top(spec, path):
     def to_screen(p):
         return np.stack([(p[:, 0] + w / 2 + margin) * ppu, (p[:, 2] + d / 2 + margin) * ppu], axis=1)
 
-    for i, part, faces, t in collect(spec):
+    for i, part, faces, t in collect(spec, top_view=True):
         base = hex_rgb(part["Color"])
         for fi, (p, n) in enumerate(faces):
             if n[1] <= 1e-3 and part.get("Shape") not in ("Ball",):
@@ -310,7 +351,8 @@ def render_top(spec, path):
     ax.set_title(
         f"{spec['Name']}  {int(w)}×{int(d)}  parts {len(spec['Parts'])}  red weight {st.get('redWeight')}  "
         f"reach {st.get('reachablePct')}%  {'OK' if not errs else str(len(errs)) + ' ERRORS'}\n"
-        "dim = not reachable on foot, magenta = trap, circles = enemy zones",
+        "dim = not reachable on foot (door open), magenta = trap, circles = enemy zones, "
+        "dashed box = start room (roof hidden), white bar = start door",
         fontsize=9,
     )
     fig.tight_layout()
@@ -337,11 +379,47 @@ def marker_label(m):
         return f"{a.get('Weapon')} ({m.get('Id')})"
     if tag == "Board":
         return "board"
+    if tag == "HealthPickup":
+        return f"+HP ({m.get('Id')})"
+    if tag == "AmmoPickup":
+        w = a.get("Weapon")
+        return f"ammo{' ' + w if w else ''} ({m.get('Id')})"
     return ""
 
 
+def draw_start_room_top(ax, spec):
+    room = start_room(spec)
+    if room:
+        x0, z0, x1, z1 = room[:4]
+        ax.add_patch(Rectangle((x0, z0), x1 - x0, z1 - z0, fill=False, ec="#00e5ff", lw=1.6, ls="--"))
+        # one label block beside the room: size + what lies inside (keeps the small room readable)
+        lines = [f"start room {room[5][0]:g}×{room[5][2]:g}, h{room[5][1]:g}"]
+        for m in spec["Markers"]:
+            if m["Tag"] in ("WeaponPickup", "HealthPickup", "AmmoPickup") and in_room(room, m["Pos"][0], m["Pos"][2]):
+                lines.append("· " + marker_label(m))
+        ax.text(x0 - 1.5, z1 - 0.5, "\n".join(lines), fontsize=7, color="white", ha="right", va="bottom",
+                bbox=dict(boxstyle="round,pad=0.25", fc="#006070", alpha=0.8, lw=0))
+    slide = door_slide(spec)
+    for p in door_parts(spec):
+        sx, _, sz = p["Size"]
+        x, _, z = p["Pos"]
+        if slide:
+            # open position (slid into the wall), ghosted
+            ax.add_patch(Rectangle((x + slide[0] - sx / 2, z + slide[2] - sz / 2), sx, sz, fill=False,
+                                   ec="white", lw=0.8, ls=":"))
+            ax.annotate("", xy=(x + slide[0] * 0.8, z + slide[2] * 0.8 - 1.6), xytext=(x, z - 1.6),
+                        arrowprops=dict(arrowstyle="->", color="white", lw=1.0))
+        ax.add_patch(Rectangle((x - sx / 2, z - sz / 2), sx, sz, fill=True, fc="white", ec="black", lw=1.6,
+                               zorder=5))
+        ax.text(x, z - 2.6, "door", fontsize=7, color="black", ha="center",
+                bbox=dict(boxstyle="round,pad=0.12", fc="white", alpha=0.85, lw=0), zorder=6)
+
+
 def draw_markers_top(ax, spec):
+    draw_start_room_top(ax, spec)
     for m in spec["Markers"]:
+        if m["Tag"] in SHAPE_MARKERS:
+            continue
         kind = marker_kind(m)
         col, sym, _ = MARKER_STYLE[kind]
         x, y, z = m["Pos"]
@@ -349,7 +427,14 @@ def draw_markers_top(ax, spec):
         if m["Tag"] == "EnemySpawn" and a.get("Zone"):
             ax.add_patch(Circle((x, z), a["Zone"], fill=False, ec=col, lw=1.4, ls="--", alpha=0.95))
             ax.add_patch(Circle((x, z), a["Zone"], fill=True, fc=col, alpha=0.10, lw=0))
-        ax.plot([x], [z], marker=sym, color=col, markersize=9 if sym != "*" else 14, mec="black", mew=0.8)
+        if m["Tag"] == "HealthPickup":
+            ax.plot([x], [z], marker="s", color="white", markersize=12, mec="black", mew=0.8)
+            ax.plot([x], [z], marker="P", color=col, markersize=10, mec=col, mew=0.5)
+        elif m["Tag"] == "AmmoPickup":
+            ax.plot([x], [z], marker="s", color=col, markersize=11, mec="#0b4d22", mew=1.4)
+            ax.plot([x], [z], marker="|", color="#ffd400", markersize=7, mew=2.2)
+        else:
+            ax.plot([x], [z], marker=sym, color=col, markersize=9 if sym != "*" else 14, mec="black", mew=0.8)
         rot = m.get("Rot")
         if rot and m["Tag"] in ("PlayerSpawn", "Board"):
             yaw = math.radians(rot[1])
@@ -357,6 +442,8 @@ def draw_markers_top(ax, spec):
             ax.annotate("", xy=(x + fx * 4, z + fz * 4), xytext=(x, z),
                         arrowprops=dict(arrowstyle="->", color=col, lw=1.2))
         lab = marker_label(m)
+        if lab and m["Tag"] != "Board" and in_room(start_room(spec), x, z):
+            lab = ""  # listed in the start room label block
         if lab:
             if y > 4.5:
                 lab += f" y{y - 3:.0f}" if m["Tag"] == "EnemySpawn" else ""
@@ -397,12 +484,27 @@ def render_iso(spec, path):
         x, _, z = part["Pos"]
         return x > w / 2 - 0.5 or z > d / 2 - 0.5
 
+    room = start_room(spec)
+
+    # start room: roof and the walls facing the camera are see-through so the inside shows
+    def near_room_wall(part):
+        if room is None or part.get("Name") != "StartRoomWall":
+            return False
+        cx, _, cz = room[4]
+        x, _, z = part["Pos"]
+        return (x - cx) + (z - cz) > 2.5
+
     transparent = []
     for i, part, faces, t in items:
         base = hex_rgb(part["Color"])
         alpha = 1.0
+        name = part.get("Name", "")
         if near_perimeter(part):
             alpha = 0.12
+        elif name in OVERHEAD and room is not None and in_room(room, part["Pos"][0], part["Pos"][2], 2):
+            alpha = 0.15
+        elif near_room_wall(part):
+            alpha = 0.22
         elif t > 0:
             alpha = max(0.3, 1 - t)
         for fi, (p, n) in enumerate(faces):
@@ -430,6 +532,8 @@ def render_iso(spec, path):
     ax.set_ylim(H, 0)
     ax.axis("off")
     for m in spec["Markers"]:
+        if m["Tag"] in SHAPE_MARKERS:
+            continue
         kind = marker_kind(m)
         col, sym, _ = MARKER_STYLE[kind]
         p = np.array([m["Pos"]], dtype=float)
@@ -441,9 +545,22 @@ def render_iso(spec, path):
                              p[0, 2] + np.sin(ang) * a["Zone"]], axis=1)
             rs, _ = proj(ring)
             ax.plot(rs[:, 0], rs[:, 1], color=col, lw=1.3, ls="--")
-        ax.plot([s[0, 0]], [s[0, 1]], marker=sym, color=col, markersize=9 if sym != "*" else 14,
-                mec="black", mew=0.8)
-    ax.set_title(f"{spec['Name']} — iso view from south-east (near walls cut away)", fontsize=10)
+        big = sym in ("*", "P")
+        ax.plot([s[0, 0]], [s[0, 1]], marker=sym, color=col, markersize=14 if big else 9,
+                mec="black" if kind != "HealthPickup" else "white", mew=0.8)
+    for part in door_parts(spec):
+        for p, n in part_faces(part):
+            if np.dot(n, cam) > 0:
+                fs, _ = proj(np.vstack([p, p[:1]]))
+                ax.plot(fs[:, 0], fs[:, 1], color="black", lw=1.6)
+    if room is not None:
+        x0, z0, x1, z1 = room[:4]
+        y = room[4][1] - room[5][1] / 2 + 0.25
+        corners = np.array([[x0, y, z0], [x1, y, z0], [x1, y, z1], [x0, y, z1], [x0, y, z0]])
+        cs, _ = proj(corners)
+        ax.plot(cs[:, 0], cs[:, 1], color="#00e5ff", lw=1.3, ls="--")
+    ax.set_title(f"{spec['Name']} — iso view from south-east (near walls cut away, start room roof see-through)",
+                 fontsize=10)
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)

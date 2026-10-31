@@ -1,8 +1,9 @@
 --!strict
 -- Stage 1-1 "그냥 찾기" (just find it). Owner: D. ~90×90, Day.
 -- Idea: one Red hides in one of four corners, each corner a different look (brick room NW, tree grove NE,
--- crate yard SW, garden SE). The spawn is in the middle of the south wall; a broken low-wall square
--- with a tree in the centre and a few crates break the sight lines so players follow the radar.
+-- crate yard SW, garden SE). The party starts in a closed start room in the middle of the south wall
+-- (v0.5); a broken low-wall square with a tree in the centre and a few crates break the sight lines so
+-- players follow the radar. One health box east of the centre square.
 return function(K: any): any
 	local parts, markers = {}, {}
 	local C = K.C
@@ -11,12 +12,12 @@ return function(K: any): any
 	K.floor(parts, { 0, 0, 0 }, { W, D }, "Tile")
 	K.perimeter(parts, { W, D })
 
-	-- Spawn (south middle) + board in front of it -----------------------------------
-	K.spawnPad(parts, { 0, 0, 39 }, { 16, 6 })
-	K.spawnRow(markers, { 0, 0.2, 39 }, 4, 3.5, "x", { 0, 0 })
-	K.board(parts, markers, { 0, 0, 30 }, { 0, 39 }, { w = 10, h = 6 })
-	K.lamp(parts, { -9, 0, 36 })
-	K.lamp(parts, { 9, 0, 36 })
+	-- Start room (south middle): spawns at the west end look at the board on the east wall,
+	-- the white door in the north wall opens onto the arena. Nothing to pick up in 1-1.
+	K.startRoomSouth(parts, markers, D, 0)
+	K.lamp(parts, { -11, 0, 30 })
+	K.lamp(parts, { 11, 0, 30 })
+	K.health(markers, { 13, 0, -4 }, "S1_1_Health")
 
 	-- Centre: broken low brick square around a tree --------------------------------
 	K.ring(parts, { -9, -12 }, { 9, 4 }, "Low", "Brick", {

@@ -2,8 +2,13 @@
 -- StageService (CONTRACT §3.4, §3.7). Owner: D.
 -- Builds workspace.Lobby at the origin on Start, and workspace.Stage at Config.Game.StageOrigin on Load.
 -- Markers are found by CollectionService tags only. Sets Lighting for the stage's Sky (Day / Night).
+-- v0.5: every stage has a start room; its white door (Geometry parts named Kit.Names.Door) is built closed and
+-- OpenStartDoor slides it (server CFrame tween, 0.6 s) by the StartDoor marker's `Slide` offset, then turns its
+-- collision off.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Lighting = game:GetService("Lighting")
+local TweenService = game:GetService("TweenService")
+local CollectionService = game:GetService("CollectionService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Types = require(Shared:WaitForChild("Types"))
@@ -27,6 +32,18 @@ local lobbyBoard: BasePart? = nil
 local stageBoard: BasePart? = nil
 
 local LOBBY_TEXT = "파인딩 레드\n준비 버튼을 누르면 시작해요\n레드만 잡으세요!"
+
+local DOOR_NAME: string = Kit.Names.Door
+local DOOR_OPEN_SECONDS = 0.6
+
+type DoorState = {
+	parts: { BasePart },
+	closed: { CFrame },
+	offset: Vector3,
+	center: Vector3, -- door center, closed (world)
+	open: boolean,
+}
+local door: DoorState? = nil
 
 -- Lighting ---------------------------------------------------------------------------
 
@@ -97,6 +114,65 @@ local function sortedById(list: { BasePart }): { BasePart }
 	return copy
 end
 
+-- "x,y,z" -> Vector3 (nil if malformed)
+local function parseVector(s: any): Vector3?
+	if type(s) ~= "string" then
+		return nil
+	end
+	local a, b, c = string.match(s, "^%s*([%-%d%.eE]+)%s*,%s*([%-%d%.eE]+)%s*,%s*([%-%d%.eE]+)%s*$")
+	local x, y, z = tonumber(a), tonumber(b), tonumber(c)
+	if x == nil or y == nil or z == nil then
+		return nil
+	end
+	return Vector3.new(x, y, z)
+end
+
+-- Finds the start door of a freshly built (closed) stage. Door parts = BaseParts named DOOR_NAME that are
+-- not markers (the StartDoor marker part may carry the same name). Hand-built maps: same names/tags work.
+local function setupDoor(model: Model, markers: { [string]: { BasePart } }): DoorState?
+	local parts: { BasePart } = {}
+	for _, inst in model:GetDescendants() do
+		if inst:IsA("BasePart") and inst.Name == DOOR_NAME and #CollectionService:GetTags(inst) == 0 then
+			table.insert(parts, inst)
+		end
+	end
+	local marker = (markers.StartDoor or {})[1]
+	if #parts == 0 then
+		if marker then
+			warn("[StageService] StartDoor marker without door parts")
+			return { parts = {}, closed = {}, offset = Vector3.zero, center = marker.Position, open = false }
+		end
+		return nil
+	end
+	-- the biggest part is the door slab; the rest (handles) ride along
+	local main = parts[1]
+	for _, p in parts do
+		if p.Size.X * p.Size.Y * p.Size.Z > main.Size.X * main.Size.Y * main.Size.Z then
+			main = p
+		end
+	end
+	local offset = if marker then parseVector(marker:GetAttribute("Slide")) else nil
+	if offset == nil then
+		-- no Slide attribute: slide along the slab's long horizontal axis by its width
+		if main.Size.X >= main.Size.Z then
+			offset = -main.CFrame.RightVector * main.Size.X
+		else
+			offset = -main.CFrame.LookVector * main.Size.Z
+		end
+	end
+	local closed: { CFrame } = {}
+	for i, p in parts do
+		closed[i] = p.CFrame -- MapBuilder just built it: closed, slab collidable, handles not
+	end
+	return {
+		parts = parts,
+		closed = closed,
+		offset = offset :: Vector3,
+		center = if marker then marker.Position else main.Position,
+		open = false,
+	}
+end
+
 local function buildLobby()
 	local old = workspace:FindFirstChild("Lobby")
 	if old then
@@ -147,6 +223,10 @@ function StageService.Load(self: Types.StageService, stageId: string): Types.Sta
 	if stageBoard then
 		MapBuilder.setBoardLines(stageBoard, { "LEVEL " .. stageId, tostring(cfg.Name or ""), "" })
 	end
+	door = setupDoor(built.Model, markers)
+	if door == nil then
+		warn("[StageService] stage " .. stageId .. " has no start door")
+	end
 	applySky(if cfg.Sky == "Night" then "Night" else "Day")
 	return handle
 end
@@ -158,6 +238,7 @@ function StageService.Unload(self: Types.StageService)
 	stage = nil
 	current = nil
 	stageBoard = nil
+	door = nil
 	applySky("Day")
 end
 
@@ -182,10 +263,37 @@ function StageService.SetBoard(self: Types.StageService, lines: { string })
 	end
 end
 
--- v0.5 stubs added by the orchestrator; Agent D replaces them.
-function StageService.OpenStartDoor(self: Types.StageService) end
+-- Slides the start door into its wall over DOOR_OPEN_SECONDS, then makes it non-collidable (and invisible to
+-- raycasts). Idempotent: later calls (or calls with no stage / no door) do nothing.
+function StageService.OpenStartDoor(self: Types.StageService)
+	local d = door
+	if d == nil or d.open then
+		return
+	end
+	d.open = true
+	local info = TweenInfo.new(DOOR_OPEN_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	for i, p in d.parts do
+		if p.Parent then
+			TweenService:Create(p, info, { CFrame = d.closed[i] + d.offset }):Play()
+		end
+	end
+	task.delay(DOOR_OPEN_SECONDS, function()
+		for i, p in d.parts do
+			if p.Parent then
+				p.CFrame = d.closed[i] + d.offset
+				p.CanCollide = false
+				p.CanQuery = false
+			end
+		end
+	end)
+end
+
+-- Door center (world, closed position; the StartDoor marker) for StageFlow's distance check. nil without a stage.
 function StageService.StartDoorPosition(self: Types.StageService): Vector3?
-	return nil
+	if current == nil or door == nil then
+		return nil
+	end
+	return door.center
 end
 
 function StageService.SetLobbyBoard(self: Types.StageService, text: string)

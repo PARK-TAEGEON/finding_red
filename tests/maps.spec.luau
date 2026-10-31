@@ -181,14 +181,36 @@ end
 
 -- Validator negative tests ---------------------------------------------------------------
 
+-- 40×40 arena, start room on the south wall (interior x -7..7, z 9..19, door at x -1..5, z 8..9)
 local function baseSpec()
 	local parts, markers = {}, {}
 	Kit.floor(parts, { 0, 0, 0 }, { 40, 40 }, "Concrete")
 	Kit.perimeter(parts, { 40, 40 })
-	Kit.spawnRow(markers, { 0, 0, 15 }, 4, 3, "x", { 0, 0 })
-	Kit.board(parts, markers, { 0, 0, 8 }, { 0, 15 }, { w = 8, h = 5 })
+	Kit.startRoomSouth(parts, markers, 40, 0)
 	Kit.red(markers, { 0, 0, -10 }, { zone = 6 })
 	return { Name = "T", Size = { 40, 20, 40 }, Parts = parts, Markers = markers }
+end
+local function removeTag(s, tag: string, count: number?)
+	local n = 0
+	for i = #s.Markers, 1, -1 do
+		if s.Markers[i].Tag == tag and n < (count or math.huge) then
+			table.remove(s.Markers, i)
+			n += 1
+		end
+	end
+end
+local function removePart(s, name: string, nth: number?)
+	local k = 0
+	for i, p in s.Parts do
+		if p.Name == name then
+			k += 1
+			if k == (nth or 1) then
+				table.remove(s.Parts, i)
+				return
+			end
+		end
+	end
+	error("no part " .. name)
 end
 
 do
@@ -196,7 +218,7 @@ do
 	check(#ok.errors == 0, "base spec valid: " .. table.concat(ok.errors, "; "))
 
 	local s = baseSpec()
-	table.remove(s.Markers, 1)
+	removeTag(s, "PlayerSpawn", 1)
 	check(hasError(Validate.run(s), "PlayerSpawn"), "too few spawns")
 
 	s = baseSpec()
@@ -274,6 +296,173 @@ do
 	check(r3.stats.trapCells > 0, "trap cells counted")
 end
 
+-- Start room (v0.5) -----------------------------------------------------------------------
+
+local function tagged(markers, tag: string)
+	local out = {}
+	for _, m in markers do
+		if m.Tag == tag then
+			table.insert(out, m)
+		end
+	end
+	return out
+end
+
+do -- kit: markers, door, slide pocket, sizes
+	local parts, markers = {}, {}
+	local room = Kit.startRoom(parts, markers, { 0, 0, 0 }, {})
+	check(#tagged(markers, "StartDoor") == 1 and #tagged(markers, "StartRoom") == 1, "startRoom markers")
+	check(#tagged(markers, "PlayerSpawn") == 4 and #tagged(markers, "Board") == 1, "startRoom spawns + board")
+	local rm = tagged(markers, "StartRoom")[1]
+	check(rm.Attr.Size == "14,12,10", "StartRoom Size attr " .. tostring(rm.Attr.Size))
+	local dm = tagged(markers, "StartDoor")[1]
+	check(dm.Attr.Slide == "-6,0,0" and dm.Attr.Width == 6 and dm.Attr.Height == 8, "StartDoor attrs " .. tostring(dm.Attr.Slide))
+	check(near(dm.Pos[1], 2) and near(dm.Pos[2], 4) and near(dm.Pos[3], -5.5), "door center in the north wall")
+	check(near(dm.Rot[2], 0), "door marker faces the arena (-z)")
+	local door, pocket
+	local roofTop, wallTop = 0, math.huge
+	for _, p in parts do
+		check(Validate.Materials[p.Material] ~= nil, "startRoom material " .. p.Material)
+		local mn, mx = Validate.aabb(p)
+		if p.Name == "StartDoor" and p.Collide ~= false then
+			door = p
+		elseif p.Name == "StartRoomWall" then
+			wallTop = math.min(wallTop, mx[2])
+			if mx[3] > -5 - 1e-6 and mn[3] < -5 + 1e-6 and mn[1] < -7 then
+				pocket = { mn, mx }
+			end
+		elseif p.Name == "StartRoomRoof" then
+			roofTop = mx[2]
+		end
+	end
+	check(door ~= nil and near(door.Size[1], 6) and near(door.Size[2], 8), "door 6 wide 8 tall")
+	check(wallTop >= 10 and roofTop > wallTop, "walls >= 10 under a roof")
+	check(pocket ~= nil, "pocket wall beside the door")
+	-- every door part slid by Slide ends up hidden inside the pocket wall
+	for _, p in parts do
+		if p.Name == "StartDoor" then
+			local q = table.clone(p)
+			q.Pos = { p.Pos[1] - 6, p.Pos[2], p.Pos[3] }
+			local mn, mx = Validate.aabb(q)
+			for i = 1, 3 do
+				check(mn[i] >= pocket[1][i] - 1e-6 and mx[i] <= pocket[2][i] + 1e-6, "open door hidden in the wall")
+			end
+		end
+	end
+	-- spawns look at the board, board on the far end wall
+	local board = tagged(markers, "Board")[1]
+	for _, sp in tagged(markers, "PlayerSpawn") do
+		check(sp.Pos[1] < board.Pos[1] - 8, "spawns at the far end")
+		check(sp.Pos[2] == room.floor + Kit.SpawnLift, "spawn root height on the room floor")
+	end
+	check(#room.spots == 3, "pickup spots")
+	for _, sp in room.spots do
+		check(math.abs(sp[1]) < 7 and math.abs(sp[3]) < 5, "spot inside")
+	end
+	-- mirrored / rotated rooms validate too (room against each wall of a small arena)
+	for _, facing in { "-z", "+z", "-x", "+x" } do
+		for _, side in { "right", "left" } do
+			local ps, ms = {}, {}
+			Kit.floor(ps, { 0, 0, 0 }, { 50, 50 }, "Concrete")
+			Kit.perimeter(ps, { 50, 50 })
+			local dv = Kit.Dirs[facing]
+			local back = 25 - 1 - 5
+			local r = Kit.startRoom(ps, ms, { -dv[1] * back, 0, -dv[2] * back }, { facing = facing, board = side })
+			Kit.red(ms, { dv[1] * 12, 0, dv[2] * 12 }, { zone = 5 })
+			Kit.health(ms, r.outside, "H")
+			local rep = Validate.run({ Name = "R" .. facing .. side, Size = { 50, 20, 50 }, Parts = ps, Markers = ms })
+			check(#rep.errors == 0, "room " .. facing .. " " .. side .. ": " .. table.concat(rep.errors, "; "))
+			local d = tagged(ms, "StartDoor")[1]
+			local sx, sy, sz = string.match(d.Attr.Slide, "^([%-%d%.]+),([%-%d%.]+),([%-%d%.]+)$")
+			sx, sy, sz = tonumber(sx), tonumber(sy), tonumber(sz)
+			check(sx ~= nil and sy == 0 and near(math.sqrt(sx * sx + sz * sz), 6), "slide 6 studs " .. d.Attr.Slide)
+			check(near(sx * dv[1] + sz * dv[2], 0), "slide runs along the door wall")
+		end
+	end
+	check(Validate.parseSize("14,12,10")[3] == 10 and Validate.parseSize("1,2") == nil and Validate.parseSize("0,1,1") == nil, "parseSize")
+end
+
+do -- validator: start room rules
+	local s = baseSpec()
+	removeTag(s, "StartDoor")
+	check(hasError(Validate.run(s), "exactly 1 StartDoor"), "missing StartDoor")
+	s = baseSpec()
+	removeTag(s, "StartRoom")
+	check(hasError(Validate.run(s), "exactly 1 StartRoom"), "missing StartRoom")
+	s = baseSpec()
+	tagged(s.Markers, "StartRoom")[1].Attr.Size = "14x12x10"
+	check(hasError(Validate.run(s), "Attr Size"), "bad StartRoom Size")
+	check(not hasError(Validate.run(baseSpec(), { stage = false }), "StartRoom"), "lobby needs no start room")
+
+	s = baseSpec()
+	Kit.playerSpawn(s.Markers, { 0, 0, 0 }, nil, "Out")
+	check(hasError(Validate.run(s), "PlayerSpawn outside the StartRoom"), "spawn outside the room")
+
+	-- the door counts as solid when closed: without it the room leaks; with it the arena is still reachable
+	s = baseSpec()
+	removePart(s, "StartDoor")
+	check(hasError(Validate.run(s), "not sealed"), "doorway without a door leaks")
+	local okr = Validate.run(baseSpec())
+	check(okr.stats.startRoomLeakCells == 0 and okr.stats.enemyMarkersReachable == 1, "door open for reachability")
+	s = baseSpec()
+	removePart(s, "StartRoomWall", 2) -- spawn-end wall
+	check(hasError(Validate.run(s), "not sealed"), "missing wall leaks")
+	s = baseSpec()
+	-- the spawn-end wall raised 6 studs off the floor: a player walks under it
+	for _, p in s.Parts do
+		if p.Name == "StartRoomWall" and p.Size[1] == 1 and p.Pos[1] < 0 then
+			p.Pos = { p.Pos[1], p.Pos[2] + 6, p.Pos[3] }
+			break
+		end
+	end
+	check(hasError(Validate.run(s), "not sealed"), "crawl gap under a wall leaks")
+	s = baseSpec()
+	for _, p in s.Parts do
+		if p.Name == "StartRoomWall" then
+			p.Size = { p.Size[1], 6, p.Size[3] }
+			p.Pos = { p.Pos[1], 3, p.Pos[3] }
+		end
+	end
+	removePart(s, "StartRoomRoof")
+	check(hasError(Validate.run(s), "not sealed"), "low walls without roof can be jumped over")
+
+	s = baseSpec()
+	Kit.crates(s.Parts, { 12, 0, 14 }, "pyramid", "x")
+	check(hasError(Validate.run(s), "roof can be climbed"), "crate pyramid next to the room reaches the roof")
+
+	s = baseSpec()
+	Kit.white(s.Markers, { 0, 0, -2 }, { count = 2, zone = 11 })
+	check(hasError(Validate.run(s), "overlaps the StartRoom"), "enemy zone overlapping the room")
+	s = baseSpec()
+	Kit.white(s.Markers, { 0, 0, -10 }, { count = 2, zone = 6 })
+	check(not hasError(Validate.run(s), "overlaps the StartRoom"), "zone clear of the room")
+
+	-- health / ammo pickups
+	s = baseSpec()
+	Kit.marker(s.Markers, "HealthPickup", { 10, 2, -5 })
+	check(hasError(Validate.run(s), "HealthPickup without Id"), "health without id")
+	s = baseSpec()
+	Kit.health(s.Markers, { 10, 0, -5 }, "X")
+	Kit.ammo(s.Markers, { -10, 0, -5 }, "X")
+	check(hasError(Validate.run(s), "duplicate AmmoPickup Id"), "ids unique across pickups")
+	s = baseSpec()
+	Kit.weapon(s.Markers, { 10, 0, -5 }, "Sniper", "Y")
+	Kit.health(s.Markers, { -10, 0, -5 }, "Y")
+	check(hasError(Validate.run(s), "duplicate HealthPickup Id"), "weapon/health id clash")
+	s = baseSpec()
+	Kit.health(s.Markers, { 10, 6, -5 }, "H")
+	check(hasError(Validate.run(s), "HealthPickup floor is"), "floating health")
+	s = baseSpec()
+	Kit.platform(s.Parts, { 12, 10, -10 }, { 6, 6 }, { style = "Concrete" })
+	Kit.ammo(s.Markers, { 12, 10, -10 }, "A")
+	check(hasError(Validate.run(s), "AmmoPickup not reachable"), "unreachable ammo")
+	s = baseSpec()
+	Kit.health(s.Markers, { 10, 0, -5 }, "H")
+	Kit.ammo(s.Markers, { -10, 0, -5 }, "A", "Pistol")
+	local okp = Validate.run(s)
+	check(#okp.errors == 0, "health + ammo valid: " .. table.concat(okp.errors, "; "))
+end
+
 -- Map modules ------------------------------------------------------------------------------
 
 local mapNames = {}
@@ -337,6 +526,93 @@ local function dist2(a, b)
 	return math.sqrt((a[1] - b[1]) ^ 2 + (a[3] - b[3]) ^ 2)
 end
 
+-- start room helpers
+local function roomBox(spec)
+	local m = byTag(spec, "StartRoom")[1]
+	local size = Validate.parseSize(m.Attr.Size)
+	local c = m.Pos
+	return { c[1] - size[1] / 2, c[2] - size[2] / 2, c[3] - size[3] / 2 }, { c[1] + size[1] / 2, c[2] + size[2] / 2, c[3] + size[3] / 2 }, size
+end
+local function insideRoom(spec, p): boolean
+	local mn, mx = roomBox(spec)
+	return p[1] > mn[1] and p[1] < mx[1] and p[3] > mn[3] and p[3] < mx[3] and p[2] > mn[2] and p[2] < mx[2]
+end
+-- eye of a player standing 3 studs outside the door (all rooms here open to -z)
+local function doorEye(spec)
+	local d = byTag(spec, "StartDoor")[1]
+	return { d.Pos[1], d.Pos[2] - d.Attr.Height / 2 + 4.5, d.Pos[3] - 3 }
+end
+local function openDoorBoxes(spec)
+	local out = {}
+	for _, b in Validate.boxes(spec) do
+		if b.name ~= "StartDoor" then
+			table.insert(out, b)
+		end
+	end
+	return out
+end
+
+do -- every stage: one start room on the south wall, door 6×8, pickups with unique ids
+	for _, name in { "S1_1", "S1_2", "S1_3" } do
+		local s = specs[name]
+		check(#byTag(s, "StartDoor") == 1 and #byTag(s, "StartRoom") == 1, name .. " one StartDoor + one StartRoom")
+		local mn, mx, size = roomBox(s)
+		check(size[1] >= 12 and size[1] <= 16 and size[3] >= 8 and size[3] <= 12, name .. " room ~14×10")
+		check(size[2] >= 10, name .. " room walls >= 10")
+		check(mx[3] >= s.Size[3] / 2 - 2, name .. " room against the south wall")
+		for _, m in byTag(s, "PlayerSpawn") do
+			check(insideRoom(s, m.Pos), name .. " spawn inside the room")
+		end
+		check(insideRoom(s, byTag(s, "Board")[1].Pos), name .. " board inside the room")
+		local d = byTag(s, "StartDoor")[1]
+		check(d.Attr.Width == 6 and d.Attr.Height == 8, name .. " door 6×8")
+		check(d.Pos[3] < mn[3] and d.Pos[3] > mn[3] - 1.5, name .. " door in the north wall")
+		local doorParts = 0
+		for _, p in s.Parts do
+			if p.Name == "StartDoor" and p.Collide ~= false then
+				doorParts += 1
+				check(p.Color == Kit.C.Door, name .. " door is white")
+				check(near(p.Pos[1], d.Pos[1]) and near(p.Pos[2], d.Pos[2]) and near(p.Pos[3], d.Pos[3]), name .. " marker at door center")
+			end
+		end
+		check(doorParts == 1, name .. " one solid door part")
+		check(reports[name].stats.startRoomLeakCells == 0, name .. " room sealed")
+		-- the room shows the party nothing of the arena: no enemy marker visible from the room center either
+		local boxes = Validate.boxes(s)
+		local rc = byTag(s, "StartRoom")[1].Pos
+		for _, e in byTag(s, "EnemySpawn") do
+			check(Validate.segmentHit(boxes, { rc[1], 5, rc[3] }, { e.Pos[1], e.Pos[2] + 1, e.Pos[3] }) ~= nil, name .. " enemy hidden from the room")
+		end
+		local health, ammo = byTag(s, "HealthPickup"), byTag(s, "AmmoPickup")
+		check(#health >= 1 and #health <= 2, name .. " 1-2 health pickups")
+		check(#ammo <= 2, name .. " <= 2 ammo pickups")
+		if name ~= "S1_1" then
+			check(#ammo >= 1, name .. " has ammo")
+		end
+		local ids = {}
+		for _, tag in { "WeaponPickup", "HealthPickup", "AmmoPickup" } do
+			for _, m in byTag(s, tag) do
+				check(m.Id ~= nil and not ids[m.Id], name .. " unique pickup id " .. tostring(m.Id))
+				ids[m.Id] = true
+			end
+		end
+		for _, m in health do
+			check(not insideRoom(s, m.Pos), name .. " health is out in the arena")
+		end
+	end
+	-- 1-3: pistol ammo in the room, the sniper stays out in the arena
+	local s3 = specs.S1_3
+	local roomAmmo = 0
+	for _, m in byTag(s3, "AmmoPickup") do
+		if insideRoom(s3, m.Pos) then
+			roomAmmo += 1
+			check(m.Attr and m.Attr.Weapon == "Pistol", "1-3 room ammo is pistol ammo")
+		end
+	end
+	check(roomAmmo == 1, "1-3 one ammo box in the start room")
+	check(not insideRoom(s3, byTag(s3, "WeaponPickup")[1].Pos), "1-3 sniper outside the room")
+end
+
 do -- Lobby
 	local s = specs.Lobby
 	check(#byTag(s, "PlayerSpawn") >= 4, "lobby spawns")
@@ -395,9 +671,12 @@ do -- 1-2: rooftops by stairs, an unreachable perch on a sniping lane, Sniper ne
 	check(dist2(pickups[1].Pos, sc) <= 16, "1-2 sniper near the spawn")
 	local boxes = Validate.boxes(s)
 	local target = { perch.Pos[1], perch.Pos[2] + 1, perch.Pos[3] }
-	check(Validate.segmentHit(boxes, { sc[1], sc[2] + 1.5, sc[3] }, target) == nil, "1-2 sniping lane spawn -> perch")
-	local pe = pickups[1].Pos
-	check(Validate.segmentHit(boxes, { pe[1], pe[2] + 2.5, pe[3] }, target) == nil, "1-2 perch visible from the pickup")
+	-- v0.5: the party starts in the closed room; the sniping lane starts at the door
+	check(Validate.segmentHit(boxes, doorEye(s), target) == nil, "1-2 sniping lane door -> perch")
+	local open = openDoorBoxes(s)
+	local inDoorway = { byTag(s, "StartDoor")[1].Pos[1], 4.7, byTag(s, "StartDoor")[1].Pos[3] }
+	check(Validate.segmentHit(open, inDoorway, target) == nil, "1-2 perch visible from the open doorway")
+	check(insideRoom(s, pickups[1].Pos), "1-2 sniper lies in the start room")
 	-- no surface within jumping reach of the perch except the perch itself
 	local perchTop = perch.Pos[2] - Kit.EnemyLift
 	for i, h in grid.h do
