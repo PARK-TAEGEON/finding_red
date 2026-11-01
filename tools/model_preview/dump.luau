@@ -9,7 +9,8 @@ fs.writeDir("build/models")
 local count = 0
 for kind, cfg in pairs(Enemies) do
 	if type(cfg) == "table" and type(cfg.Body) == "string" then
-		local shells = EnemyBody.shells(kind, cfg.Body, cfg.Accent or "#222222")
+		for _, style in ipairs(EnemyBody.Styles) do
+		local shells = EnemyBody.shells(kind, cfg.Body, cfg.Accent or "#222222", style)
 		if shells then
 			local out = {}
 			for _, s in ipairs(shells) do
@@ -25,8 +26,10 @@ for kind, cfg in pairs(Enemies) do
 					Name = s.Name or s.Bone,
 				})
 			end
-			fs.writeFile("build/models/" .. kind .. ".json", serde.encode("json", { Kind = kind, Shells = out }))
+			local label = kind .. " · " .. (EnemyBody.StyleNames[style] or style)
+			fs.writeFile("build/models/" .. kind .. "_" .. style .. ".json", serde.encode("json", { Kind = label, Shells = out }))
 			count += 1
+		end
 		end
 	end
 end

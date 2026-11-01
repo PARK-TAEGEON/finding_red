@@ -135,7 +135,7 @@ def render(model, path):
             polys.append(pf)
             colors.append(col)
         pc = Poly3DCollection(polys, facecolors=colors, edgecolors=colors, linewidths=0.2)
-        ax.add_collection3d(pc)
+        ax.add_collection3d(pc, autolim=False)
         ax.set_xlim(-2, 2)
         ax.set_ylim(-2, 2)
         ax.set_zlim(0, 6.2)

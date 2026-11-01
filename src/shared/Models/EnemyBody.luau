@@ -153,14 +153,132 @@ local function white(body: string, accent: string): { Shell }
 	return out
 end
 
-local BUILDERS: { [string]: (string, string) -> { Shell } } = {
-	Red = red,
-	White = white,
+-- Style B "Imp": big round head, huge glowing round eyes, pointy ears, fangs and a tail.
+local function redImp(body: string, accent: string): { Shell }
+	local skin = body
+	local dark = mix(body, "#000000", 0.22)
+	local deep = mix(body, "#000000", 0.55)
+	local light = mix(body, "#FFFFFF", 0.3)
+	local out: { Shell } = {}
+	table.insert(out, S("Torso", "Ellipsoid", { 1.45, 1.55, 1.15 }, { 0, -0.05, 0 }, skin, nil, nil, "Body"))
+	table.insert(out, S("Torso", "Ellipsoid", { 0.95, 0.95, 0.25 }, { 0, -0.2, -0.5 }, light, nil, nil, "Belly"))
+	table.insert(out, S("Torso", "Ellipsoid", { 1.15, 0.6, 0.95 }, { 0, -0.95, 0.02 }, dark, nil, nil, "Pelvis"))
+	table.insert(out, S("Torso", "Ellipsoid", { 0.75, 0.8, 0.7 }, { 0, 0.95, -0.03 }, dark, nil, nil, "Neck"))
+	-- big head
+	table.insert(out, S("Head", "Ellipsoid", { 2.0, 1.8, 1.75 }, { 0, 0.45, -0.05 }, skin, nil, nil, "Skull"))
+	for _, side in ipairs({ -1, 1 }) do
+		-- round glowing eyes with pupils, angry brow
+		table.insert(out, S("Head", "Ellipsoid", { 0.55, 0.62, 0.2 }, { side * 0.42, 0.68, -0.86 }, accent, nil, "Neon", "Eye"))
+		table.insert(out, S("Head", "Ball", { 0.22, 0.22, 0.22 }, { side * 0.36, 0.62, -0.97 }, "#14100C", nil, nil, "Pupil"))
+		table.insert(out, S("Head", "Block", { 0.6, 0.14, 0.2 }, { side * 0.42, 1.02, -0.84 }, deep, { 0, 0, side * 20 }, nil, "Brow"))
+		-- pointy ears
+		table.insert(out, S("Head", "Wedge", { 0.18, 0.9, 0.55 }, { side * 1.02, 0.85, 0.05 }, skin, { 0, side * 90, side * -35 }, nil, "Ear"))
+		-- little horn nubs
+		table.insert(out, S("Head", "Ellipsoid", { 0.28, 0.42, 0.28 }, { side * 0.45, 1.45, 0.05 }, deep, { 0, 0, side * -18 }, nil, "Horn"))
+		-- fangs
+		table.insert(out, S("Head", "Wedge", { 0.14, 0.24, 0.1 }, { side * 0.26, 0.03, -0.87 }, "#F6F3EA", { 0, 0, 180 }, nil, "Fang"))
+	end
+	table.insert(out, S("Head", "Ellipsoid", { 1.05, 0.26, 0.2 }, { 0, 0.15, -0.82 }, "#1A1014", nil, nil, "Grin"))
+	-- tail: three segments curling back, arrow tip
+	table.insert(out, S("Torso", "Ellipsoid", { 0.3, 0.3, 0.75 }, { 0, -0.9, 0.78 }, dark, { 25, 0, 0 }, nil, "Tail1"))
+	table.insert(out, S("Torso", "Ellipsoid", { 0.26, 0.26, 0.7 }, { 0, -0.7, 1.35 }, dark, { -20, 0, 0 }, nil, "Tail2"))
+	table.insert(out, S("Torso", "Wedge", { 0.12, 0.45, 0.4 }, { 0, -0.45, 1.68 }, deep, { -90, 0, 0 }, nil, "TailTip"))
+	limbs(out, { Arm = 0.48, Leg = 0.6, Hand = 0.56, Foot = { 0.55, 0.32, 0.9 } }, skin, dark, dark, skin, deep)
+	return out
+end
+
+local function whiteImp(body: string, accent: string): { Shell }
+	local skin = body
+	local plate = mix(body, "#8A93A6", 0.3)
+	local joint = "#3B3F49"
+	local out: { Shell } = {}
+	table.insert(out, S("Torso", "Ellipsoid", { 1.55, 1.6, 1.2 }, { 0, -0.05, 0 }, skin, nil, nil, "Body"))
+	table.insert(out, S("Torso", "Ellipsoid", { 1.2, 0.6, 1.0 }, { 0, -0.95, 0 }, skin, nil, nil, "Pelvis"))
+	table.insert(out, S("Torso", "Ellipsoid", { 1.6, 0.25, 1.25 }, { 0, -0.35, 0 }, joint, nil, nil, "Belt"))
+	table.insert(out, S("Torso", "Ellipsoid", { 0.7, 0.75, 0.7 }, { 0, 0.95, 0 }, joint, nil, nil, "Neck"))
+	-- big round helmet with one wide visor
+	table.insert(out, S("Head", "Ellipsoid", { 2.0, 1.85, 1.8 }, { 0, 0.45, 0 }, skin, nil, nil, "Helmet"))
+	table.insert(out, S("Head", "Ellipsoid", { 1.6, 0.6, 0.45 }, { 0, 0.52, -0.75 }, accent, nil, "Glass", "Visor"))
+	table.insert(out, S("Head", "Block", { 0.4, 0.07, 0.05 }, { -0.4, 0.68, -0.98 }, "#FFFFFF", { 0, 0, 8 }, "Neon", "Glint"))
+	for _, side in ipairs({ -1, 1 }) do
+		table.insert(out, S("Head", "Cylinder", { 0.2, 0.55, 0.55 }, { side * 1.0, 0.45, 0 }, plate, nil, nil, "EarCap"))
+	end
+	table.insert(out, S("Head", "Cylinder", { 0.5, 0.12, 0.12 }, { 0.35, 1.5, 0.1 }, joint, { 0, 0, 90 }, nil, "Antenna"))
+	table.insert(out, S("Head", "Ball", { 0.24, 0.24, 0.24 }, { 0.35, 1.8, 0.1 }, "#FF4A4A", nil, "Neon", "AntennaTip"))
+	limbs(out, { Arm = 0.5, Leg = 0.62, Hand = 0.5, Foot = { 0.58, 0.34, 0.9 } }, skin, skin, joint, joint, joint)
+	return out
+end
+
+-- Style C "Brute": wide shoulders, long arms with claws, small head, underbite with tusks, back spikes.
+local function redBrute(body: string, accent: string): { Shell }
+	local skin = body
+	local dark = mix(body, "#000000", 0.3)
+	local deep = mix(body, "#000000", 0.6)
+	local out: { Shell } = {}
+	table.insert(out, S("Torso", "Ellipsoid", { 2.25, 1.35, 1.2 }, { 0, 0.5, 0.05 }, skin, { -14, 0, 0 }, nil, "Chest"))
+	table.insert(out, S("Torso", "Ellipsoid", { 1.15, 1.15, 0.85 }, { 0, -0.4, 0.05 }, dark, nil, nil, "Waist"))
+	table.insert(out, S("Torso", "Ellipsoid", { 1.25, 0.7, 0.95 }, { 0, -0.98, 0.05 }, deep, nil, nil, "Pelvis"))
+	for i = 0, 3 do
+		table.insert(out, S("Torso", "Wedge", { 0.16, 0.42, 0.5 }, { 0, 0.95 - i * 0.42, 0.62 }, deep, { -60, 180, 0 }, nil, "Spike"))
+	end
+	-- small low head pushed forward, heavy brow, big jaw with tusks
+	table.insert(out, S("Head", "Ellipsoid", { 1.3, 1.25, 1.3 }, { 0, 0.15, -0.35 }, skin, nil, nil, "Skull"))
+	table.insert(out, S("Head", "Ellipsoid", { 1.35, 0.7, 1.15 }, { 0, -0.25, -0.5 }, dark, nil, nil, "Jaw"))
+	table.insert(out, S("Head", "Block", { 1.2, 0.26, 0.4 }, { 0, 0.42, -0.86 }, deep, { -10, 0, 0 }, nil, "Brow"))
+	for _, side in ipairs({ -1, 1 }) do
+		table.insert(out, S("Head", "Ellipsoid", { 0.3, 0.16, 0.1 }, { side * 0.27, 0.26, -1.0 }, accent, nil, "Neon", "Eye"))
+		table.insert(out, S("Head", "Wedge", { 0.14, 0.38, 0.14 }, { side * 0.38, -0.02, -1.02 }, "#F2EAD8", nil, nil, "Tusk"))
+		table.insert(out, S("Head", "Wedge", { 0.2, 0.5, 0.45 }, { side * 0.55, 0.75, -0.2 }, deep, { -40, 0, side * -25 }, nil, "Horn"))
+	end
+	-- long arms: extra forearm length + claws
+	limbs(out, { Arm = 0.7, Leg = 0.78, Hand = 0.78, Foot = { 0.72, 0.4, 1.15 } }, skin, dark, dark, skin, deep)
+	for _, side in ipairs({ -1, 1 }) do
+		local arm = if side < 0 then "Left Arm" else "Right Arm"
+		for k = -1, 1 do
+			table.insert(out, S(arm, "Wedge", { 0.12, 0.38, 0.14 }, { -side * 0.36 + k * 0.18, -1.78, -0.12 }, "#F2EAD8", { 0, 0, 180 }, nil, "Claw"))
+		end
+	end
+	return out
+end
+
+local function whiteBrute(body: string, accent: string): { Shell }
+	local skin = body
+	local plate = mix(body, "#7C8597", 0.45)
+	local joint = "#30343D"
+	local out: { Shell } = {}
+	table.insert(out, S("Torso", "Ellipsoid", { 2.1, 1.35, 1.15 }, { 0, 0.45, 0 }, skin, nil, nil, "Chest"))
+	table.insert(out, S("Torso", "Block", { 1.55, 1.1, 0.3 }, { 0, 0.45, -0.52 }, plate, { -6, 0, 0 }, nil, "ChestPlate"))
+	table.insert(out, S("Torso", "Ellipsoid", { 1.2, 1.1, 0.9 }, { 0, -0.45, 0 }, skin, nil, nil, "Waist"))
+	table.insert(out, S("Torso", "Ellipsoid", { 1.3, 0.7, 0.95 }, { 0, -0.98, 0 }, joint, nil, nil, "Pelvis"))
+	-- angular helmet with a narrow glowing slit
+	table.insert(out, S("Head", "Ellipsoid", { 1.5, 1.6, 1.55 }, { 0, 0.45, 0 }, skin, nil, nil, "Helmet"))
+	table.insert(out, S("Head", "Ellipsoid", { 0.3, 0.45, 1.5 }, { 0, 1.15, 0.05 }, plate, nil, nil, "Crest"))
+	table.insert(out, S("Head", "Ellipsoid", { 1.2, 0.5, 0.35 }, { 0, 0.5, -0.62 }, accent, nil, nil, "Faceplate"))
+	table.insert(out, S("Head", "Block", { 0.95, 0.12, 0.08 }, { 0, 0.55, -0.79 }, "#46E6FF", nil, "Neon", "Slit"))
+	table.insert(out, S("Head", "Ellipsoid", { 1.2, 0.45, 0.4 }, { 0, -0.05, -0.5 }, plate, nil, nil, "Jawguard"))
+	for _, side in ipairs({ -1, 1 }) do
+		local arm = if side < 0 then "Left Arm" else "Right Arm"
+		table.insert(out, S(arm, "Ellipsoid", { 1.2, 0.6, 1.15 }, { -side * 0.15, 0.95, 0 }, plate, { 0, 0, side * -15 }, nil, "Pauldron"))
+	end
+	limbs(out, { Arm = 0.66, Leg = 0.74, Hand = 0.64, Foot = { 0.7, 0.4, 1.1 } }, skin, skin, joint, joint, joint)
+	return out
+end
+
+EnemyBody.Styles = { "Sleek", "Imp", "Brute" }
+EnemyBody.StyleNames = { Sleek = "A 날렵형", Imp = "B 장난꾸러기형", Brute = "C 짐승형" }
+EnemyBody.DefaultStyle = "Sleek"
+
+local BUILDERS: { [string]: { [string]: (string, string) -> { Shell } } } = {
+	Sleek = { Red = red, White = white },
+	Imp = { Red = redImp, White = whiteImp },
+	Brute = { Red = redBrute, White = whiteBrute },
 }
 
--- Returns the shell list for `kind`, or nil (caller keeps the plain R6 look) for unknown kinds.
-function EnemyBody.shells(kind: string, body: string, accent: string): { Shell }?
-	local build = BUILDERS[kind]
+-- Returns the shell list for `kind` in `style` (default EnemyBody.DefaultStyle), or nil (caller keeps
+-- the plain R6 look) for unknown kinds.
+function EnemyBody.shells(kind: string, body: string, accent: string, style: string?): { Shell }?
+	local set = BUILDERS[style or EnemyBody.DefaultStyle] or BUILDERS.Sleek
+	local build = set[kind]
 	if not build then
 		return nil
 	end
