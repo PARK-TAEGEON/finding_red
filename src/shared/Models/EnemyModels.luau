@@ -8,6 +8,7 @@
 local Shared = script.Parent.Parent
 local Assets = require(Shared.Assets)
 local EnemiesConfig = require(Shared.Config.Enemies)
+local EnemyBody = require(Shared.Models.EnemyBody)
 
 local EnemyModels = {}
 
@@ -80,6 +81,83 @@ local function frame(parent: Instance, name: string, pos: UDim2, size: UDim2, co
 	return f
 end
 
+
+-- Visible body (orchestrator, design pass 2026-11-01): the R6 bones stay for animation, joints and
+-- ragdoll but turn invisible; EnemyBody's shells are welded on top so the silhouette is slim and
+-- rounded instead of the stock blocky R6. Shells are massless, non-colliding and queryable (hits).
+local function shellPart(shape: string, size: Vector3): BasePart
+	if shape == "Wedge" then
+		local w = Instance.new("WedgePart")
+		w.Size = size
+		return w
+	end
+	local p = Instance.new("Part")
+	if shape == "Ball" then
+		local d = math.min(size.X, size.Y, size.Z)
+		p.Shape = Enum.PartType.Ball
+		p.Size = Vector3.new(d, d, d)
+	elseif shape == "Cylinder" then
+		local d = math.min(size.Y, size.Z)
+		p.Shape = Enum.PartType.Cylinder
+		p.Size = Vector3.new(size.X, d, d)
+	else
+		p.Size = size
+		if shape == "Ellipsoid" then
+			local mesh = Instance.new("SpecialMesh")
+			mesh.MeshType = Enum.MeshType.Sphere
+			mesh.Parent = p
+		end
+	end
+	return p
+end
+
+local function applyShells(model: Model, kind: string, bones: { [string]: BasePart }, body: string, accent: string): boolean
+	local shells = EnemyBody.shells(kind, body, accent)
+	if not shells then
+		return false
+	end
+	for name, bone in pairs(bones) do
+		if name ~= "HumanoidRootPart" then
+			bone.Transparency = 1
+			bone.CastShadow = false
+		end
+	end
+	for _, s in ipairs(shells) do
+		local bone = bones[s.Bone]
+		if bone then
+			local sp = shellPart(s.Shape, Vector3.new(s.Size[1], s.Size[2], s.Size[3]))
+			sp.Name = s.Name or "Shell"
+			sp.Color = EnemyModels.color(s.Color)
+			local okMat, mat = pcall(function()
+				return (Enum.Material :: any)[s.Material or "SmoothPlastic"]
+			end)
+			sp.Material = if okMat and mat then mat else Enum.Material.SmoothPlastic
+			if s.Material == "Glass" then
+				sp.Reflectance = 0.25
+			end
+			sp.TopSurface = Enum.SurfaceType.Smooth
+			sp.BottomSurface = Enum.SurfaceType.Smooth
+			sp.Anchored = false
+			sp.CanCollide = false
+			sp.CanTouch = false
+			sp.CanQuery = true
+			sp.Massless = true
+			sp.CastShadow = s.Material ~= "Neon"
+			local rot = s.Rot or { 0, 0, 0 }
+			local offset = CFrame.new(s.Pos[1], s.Pos[2], s.Pos[3])
+				* CFrame.Angles(math.rad(rot[1]), math.rad(rot[2]), math.rad(rot[3]))
+			sp.CFrame = bone.CFrame * offset
+			local w = Instance.new("Weld")
+			w.Part0 = bone
+			w.Part1 = sp
+			w.C0 = offset
+			w.Parent = sp
+			sp.Parent = model
+		end
+	end
+	return true
+end
+
 local BLACK = Color3.fromRGB(20, 18, 22)
 local WHITE = Color3.fromRGB(250, 250, 250)
 
@@ -125,7 +203,7 @@ local function overhead(head: BasePart)
 	local bar = Instance.new("BillboardGui")
 	bar.Name = "HPBar"
 	bar.Size = UDim2.new(2.6, 0, 0.3, 0)
-	bar.StudsOffset = Vector3.new(0, 1.45, 0)
+	bar.StudsOffset = Vector3.new(0, EnemyBody.HeadTop + 0.45, 0)
 	bar.LightInfluence = 0
 	bar.MaxDistance = 120
 	bar.AlwaysOnTop = false
@@ -141,7 +219,7 @@ local function overhead(head: BasePart)
 	local alert = Instance.new("BillboardGui")
 	alert.Name = "Alert"
 	alert.Size = UDim2.new(2.4, 0, 2.4, 0)
-	alert.StudsOffset = Vector3.new(0, 3, 0)
+	alert.StudsOffset = Vector3.new(0, EnemyBody.HeadTop + 1.9, 0)
 	alert.LightInfluence = 0
 	alert.MaxDistance = 160
 	alert.AlwaysOnTop = true
@@ -236,7 +314,18 @@ local function buildR6(kind: string, cfg: EnemiesConfig.EnemyConfig?): Model
 	motor("Right Hip", torso, torso, rl, CFrame.new(1, -1, 0, 0, 0, 1, 0, 1, 0, -1, 0, 0), CFrame.new(0.5, 1, 0, 0, 0, 1, 0, 1, 0, -1, 0, 0))
 	motor("Left Hip", torso, torso, ll, CFrame.new(-1, -1, 0, 0, 0, -1, 0, 1, 0, 1, 0, 0), CFrame.new(-0.5, 1, 0, 0, 0, -1, 0, 1, 0, 1, 0, 0))
 
-	if kind == "Red" then
+	local shelled = applyShells(model, kind, {
+		HumanoidRootPart = root,
+		Torso = torso,
+		Head = head,
+		["Left Arm"] = la,
+		["Right Arm"] = ra,
+		["Left Leg"] = ll,
+		["Right Leg"] = rl,
+	}, if cfg then cfg.Body else "#AAAAAA", if cfg then cfg.Accent else "#222222")
+	if shelled then
+		-- face, horns and visor come from the shells
+	elseif kind == "Red" then
 		redFace(head, accent)
 		-- two little horns: readable red silhouette even from behind
 		for i, x in ipairs({ -0.6, 0.6 }) do
